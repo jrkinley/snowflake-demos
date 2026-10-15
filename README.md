@@ -15,64 +15,82 @@ This repository is managed by my [XO](https://github.com/Snowflake-Labs/coco-ski
 
 ## Layout
 
+Flat: one folder per demo at the repository root, named after the outcome it delivers.
+
 ```
 snowflake-demos/
-├── README.md               This file: rules and the demo index
-├── <product-area>/         e.g. openflow, cortex, snowpark, streaming
-│   └── <demo-name>/        One self-contained demo (kebab-case)
-└── terraform/              Shared external infrastructure (e.g. AWS), created when first needed
+├── README.md                 This file: rules and the demo index
+├── postgres-cdc-openflow/    A skill demo: the folder is a Cortex Code skill
+│   ├── SKILL.md
+│   ├── references/           Optional: detail the skill loads on demand
+│   └── assets/               Optional: small SQL or config files
+└── <another-demo>/           A project demo: README.md plus code, infra, data
 ```
 
-- Group demos by the **primary** Snowflake product they show. Create a new product-area folder only when the first demo for it arrives; delete it when its last demo goes.
-- A demo folder is self-contained. Shared assets go in `terraform/` (external infra) or are copied in; demos must not reach into each other's folders.
-- Demo names describe what the demo does (e.g. `postgres-cdc`), never who it was built for.
+- **Name by outcome, not product.** Most demos touch several products, so the folder is a short kebab-case slug for what the demo achieves (e.g. `postgres-cdc-openflow`), never who it was built for. Products are recorded in the index, not the folder structure.
+- **Self-contained.** A demo never reaches into another demo's folder. Copy shared pieces in rather than linking across.
+
+## Two kinds of demo
+
+**Skill demo (the default).** If a Cortex Code skill can orchestrate the whole demo end to end, the demo *is* the skill: setup, walkthrough and teardown all live in `SKILL.md`, with `references/` and `assets/` for anything too detailed or too large to inline. Anyone can run it by adding the folder to Cortex Code as a skill and asking for the demo.
+
+**Project demo (the exception).** Use this only when a skill cannot carry the demo:
+
+- it needs application code, a container image or a codebase someone works in
+- it needs external infrastructure (e.g. Terraform for AWS resources)
+- its files exceed what a skill can ship (50 files, 2 MB per file, 10 MB total)
+
+A project demo has a `README.md` and whatever folders it needs (`app/`, `terraform/`, `sql/`, ...). It may also include a `SKILL.md` so an agent can drive it from a clone.
+
+When unsure, start as a skill demo and promote it to a project demo only when it outgrows one.
 
 ## What every demo contains
 
-Each demo folder has a `README.md` with these sections, in this order:
+Whichever kind, the entry point (`SKILL.md` or `README.md`) covers, in this order:
 
-1. **Title and one-paragraph summary**: what it shows and the story it tells.
-2. **Prerequisites**: features, roles, external infra, local tools.
-3. **Setup**: numbered steps or a single script, runnable from a clean account.
+1. **Summary**: the outcome and the story it tells, in one paragraph.
+2. **Prerequisites**: Snowflake features, privileges, external services and local tools.
+3. **Setup**: runnable from a clean account.
 4. **Run the demo**: the walkthrough, including the "aha" moment.
-5. **Teardown**: how to remove every Snowflake object and external resource the demo created.
+5. **Teardown**: removes every Snowflake object and external resource the demo created.
 6. **Status**: `Last verified: YYYY-MM-DD`, plus known issues.
 
-Snowflake objects created by a demo use a single dedicated database (e.g. `DEMO_<NAME>`) and role where practical, so teardown is a `DROP DATABASE` and `DROP ROLE` rather than a hunt. SQL lives in numbered files (`01_setup.sql`, `02_...`, `99_teardown.sql`) so it can be run in order.
+Snowflake objects go in a dedicated database and role per demo where practical (e.g. `POSTGRES_CDC_OPENFLOW_DB`), so teardown is a `DROP DATABASE` and `DROP ROLE` rather than a hunt.
 
-A demo may also ship a CoCo skill (`SKILL.md`) to drive it interactively, but the README must stand on its own.
+Skill demos follow the Cortex Code skill conventions: frontmatter `name` matches the folder, no `README.md` inside the skill, `references/` (plural), and bundled files resolved relative to the skill's own directory, never the working directory.
 
 ## Workflows
 
 ### Build a new demo
 
-1. Check the index below: extend an existing demo if it covers the same story.
-2. Create `<product-area>/<demo-name>/` on a feature branch (`demo/<demo-name>`).
-3. Build and run it end to end in a Snowflake account, including teardown.
-4. Write the README to the template above with today's `Last verified` date.
-5. Add a row to the index below, then commit and raise a PR.
+1. Check the index: extend an existing demo if it delivers the same outcome.
+2. Decide skill demo or project demo using the test above, and say which and why.
+3. Create `<demo-name>/` on a feature branch (`demo/<demo-name>`).
+4. Run it end to end in a Snowflake account, including teardown.
+5. Write the entry point to the template above with today's `Last verified` date.
+6. Add a row to the index, then commit and raise a PR.
 
 ### Update an existing demo
 
-1. Read its README first and check its `Last verified` date.
+1. Read its entry point first and check its `Last verified` date.
 2. Make the change on a feature branch, re-run the affected steps and teardown.
-3. Update the README (including `Last verified`) and the index row if the description changed.
+3. Update `Last verified`, and the index row if the summary or products changed.
 
 ### Retire a demo
 
-1. Confirm with the operator. Make sure its teardown has been run so nothing is left billing in the account.
-2. Delete the folder, remove its index row, remove the product-area folder if now empty.
-3. Commit with a message naming the demo, so it can be found in history (`git log --all -- <path>`) and restored.
+1. Confirm with the operator, and make sure its teardown has run so nothing is left billing.
+2. Delete the folder and its index row.
+3. Commit with a message naming the demo so it can be found in history (`git log --all -- <demo-name>`) and restored.
 
 ### Keep the repository tidy
 
-When working here, flag (don't silently fix) anything that breaks these rules: demos missing from the index, index rows with no folder, untracked folders, committed secrets or binaries, and demos not verified in over six months. Offer to retire or re-verify stale demos.
+When working here, flag (don't silently fix) anything that breaks these rules: folders missing from the index, index rows with no folder, untracked folders, committed secrets or binaries, skill demos that have outgrown a skill, and demos not verified in over six months. Offer to retire or re-verify stale demos.
 
 ## Demo index
 
 Keep this table in sync with the folders. One row per demo.
 
-| Demo | Product area | Summary | Last verified |
-|------|--------------|---------|---------------|
+| Demo | Outcome | Products | Kind | Last verified |
+|------|---------|----------|------|---------------|
 
 No demos yet.
