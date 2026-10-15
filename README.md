@@ -92,5 +92,4 @@ Keep this table in sync with the folders. One row per demo.
 
 | Demo | Outcome | Products | Kind | Last verified |
 |------|---------|----------|------|---------------|
-
-No demos yet.
+| [imf-dbt](imf-dbt/) | Turn the IMF World Economic Outlook into governed, documented metrics with dbt running inside Snowflake | dbt Projects on Snowflake, Snowpark Python, external access, tasks, Horizon, semantic views, Cortex Analyst | Project | 2026-10-15 |
