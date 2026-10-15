@@ -1,0 +1,94 @@
+version: 2
+
+sources:
+  - name: imf_raw
+    description: >
+      The IMF World Economic Outlook (WEO) as published through the public IMF
+      SDMX 3.0 API (dataflow IMF.RES/WEO). Landed by the
+      DBT_PROJECTS.LOAD_IMF_WEO stored procedure and treated as an external
+      source system: dbt reads it and never writes to it. Each vintage is kept,
+      so the raw tables hold the history of every release loaded.
+    database: IMF_DBT_DB
+    schema: RAW
+
+    tables:
+      - name: imf_weo_observations
+        description: >
+          One row per country or aggregate, indicator, year and vintage. A full
+          vintage is about 360,000 rows across 145 indicators, around 200
+          countries and 13 IMF aggregates, and the years 1980 to five years
+          ahead. Values are in full units; SCALE says how the IMF displays them.
+        config:
+          loaded_at_field: ingestion_timestamp
+          # The WEO publishes twice a year, in April and October, so a batch
+          # older than seven months means a release has been missed.
+          freshness:
+            warn_after: {count: 200, period: day}
+            error_after: {count: 400, period: day}
+
+        columns:
+          - name: indicator_code
+            description: IMF WEO indicator code, for example NGDP_RPCH. Opaque without the CL_WEO_INDICATOR codelist.
+            data_tests:
+              - not_null
+          - name: country_code
+            description: >
+              ISO 3166 alpha-3 country code, or an IMF aggregate code such as
+              G001 (World) or G119 (G7).
+            data_tests:
+              - not_null
+          - name: frequency
+            description: Observation frequency. Always A (annual) in the WEO.
+            data_tests:
+              - accepted_values:
+                  values: ['A']
+          - name: time_period
+            description: Observation year as text, for example 2024.
+          - name: obs_value
+            description: The published value, in full units (not scaled).
+          - name: scale
+            description: Power of ten the IMF uses to display the value. 9 means billions, 6 millions, 0 units.
+          - name: unit
+            description: Unit code, for example PT (percent), USD or XDC (domestic currency). Blank for some count and ratio series.
+          - name: latest_actual_annual_data
+            description: >
+              The last year of actual data for this series, as published, for
+              example 2025 or FY2024/25. Later years are IMF staff projections.
+          - name: publication_date
+            description: When the IMF published this vintage. Identifies the release.
+            data_tests:
+              - not_null
+          - name: ingestion_timestamp
+            description: When the loader procedure landed this batch.
+
+      - name: imf_weo_indicators
+        description: The IMF CL_WEO_INDICATOR codelist. The governed name and definition of every WEO indicator.
+        columns:
+          - name: indicator_code
+            description: IMF WEO indicator code.
+            data_tests:
+              - not_null
+              - unique
+          - name: indicator_name
+            description: Official indicator name.
+          - name: indicator_description
+            description: Official indicator definition.
+          - name: codelist_version
+            description: Version of the codelist the row came from.
+          - name: ingestion_timestamp
+            description: When the loader procedure landed this batch.
+
+      - name: imf_weo_countries
+        description: The IMF CL_WEO_COUNTRY codelist. Names for every country and IMF aggregate.
+        columns:
+          - name: country_code
+            description: ISO 3166 alpha-3 code or IMF aggregate code.
+            data_tests:
+              - not_null
+              - unique
+          - name: country_name
+            description: Official name.
+          - name: codelist_version
+            description: Version of the codelist the row came from.
+          - name: ingestion_timestamp
+            description: When the loader procedure landed this batch.

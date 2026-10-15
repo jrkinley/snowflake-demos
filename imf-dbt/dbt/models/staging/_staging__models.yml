@@ -1,0 +1,61 @@
+version: 2
+
+models:
+  - name: stg_imf__observations
+    description: Raw WEO observations renamed and cast. The year is numeric and the latest-actual marker is parsed to a year.
+    columns:
+      - name: country_code
+        description: ISO3 country code or IMF aggregate code.
+      - name: indicator_code
+        description: IMF WEO indicator code.
+      - name: frequency
+        description: Observation frequency, always A.
+      - name: observation_year
+        description: Observation year. Null for the handful of malformed periods in the source.
+      - name: observation_value
+        description: The published value, in full units.
+      - name: display_scale
+        description: Power of ten the IMF uses to display the value.
+      - name: unit_code
+        description: IMF unit code.
+      - name: latest_actual_year
+        description: Last year of actual data for the series. For fiscal years such as FY2024/25, the year the fiscal year started.
+      - name: vintage_published_at
+        description: When the IMF published the vintage.
+      - name: batch_loaded_at
+        description: When the batch was landed.
+
+  - name: stg_imf__indicators
+    description: The CL_WEO_INDICATOR codelist renamed and cast.
+    columns:
+      - name: indicator_code
+        description: IMF WEO indicator code.
+      - name: indicator_name
+        description: Official indicator name.
+      - name: indicator_description
+        description: Official indicator definition.
+      - name: codelist_version
+        description: Codelist version.
+
+  - name: stg_imf__countries
+    description: The CL_WEO_COUNTRY codelist renamed and cast.
+    columns:
+      - name: country_code
+        description: ISO3 country code or IMF aggregate code.
+      - name: country_name
+        description: Official name.
+      - name: codelist_version
+        description: Codelist version.
+
+  - name: stg_imf__units
+    description: The unit dictionary seed, cast. Translates IMF unit codes into labels and says which are rates.
+    columns:
+      - name: unit_code
+        description: IMF unit code.
+        data_tests:
+          - not_null
+          - unique
+      - name: unit_label
+        description: Human-readable unit.
+      - name: is_rate
+        description: True for percentages and indexes, which must not be summed across countries.

@@ -1,0 +1,15 @@
+version: 2
+
+seeds:
+  - name: imf_unit_dictionary
+    description: >
+      Labels for the IMF unit codes, and whether each is a rate. The IMF
+      publishes unit codes on every observation but no codelist for them, so
+      this small reference table is maintained by hand.
+    columns:
+      - name: unit_code
+        description: IMF unit code, for example PT or USD.
+      - name: unit_label
+        description: Human-readable unit.
+      - name: is_rate
+        description: True for percentages and indexes, which must not be summed across countries.

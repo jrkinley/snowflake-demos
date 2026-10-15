@@ -1,0 +1,27 @@
+version: 2
+
+snapshots:
+  - name: snap_gdp_growth_projections
+    description: >
+      History of the IMF's real GDP growth projections as this pipeline saw
+      them. A new row is written whenever a projected value changes, with
+      dbt_valid_from and dbt_valid_to marking when each value was current.
+    columns:
+      - name: projection_key
+        description: Country code and year, the snapshot's unique key.
+      - name: country_code
+        description: ISO3 country code.
+      - name: observation_year
+        description: The projected year.
+      - name: real_gdp_growth_pct
+        description: Projected real GDP growth, percent.
+      - name: vintage_label
+        description: Release the projection came from.
+      - name: dbt_scd_id
+        description: Unique id for each version of a row.
+      - name: dbt_updated_at
+        description: When dbt recorded this version.
+      - name: dbt_valid_from
+        description: When this version became current.
+      - name: dbt_valid_to
+        description: When this version was superseded. Null for the current version.
