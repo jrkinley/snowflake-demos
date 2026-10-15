@@ -4,6 +4,68 @@
 
 A dbt project that turns the IMF World Economic Outlook (WEO) into governed, tested and documented economic metrics, running entirely inside Snowflake as a dbt project object. A stored procedure lands the full WEO release from the public IMF API: 145 indicators, about 200 countries and 13 IMF aggregates, 1980 to five years ahead. dbt builds it into bronze, silver and gold layers on dbt Core 1.12.3, with no dbt installation anywhere. The story is what a team gets once dbt runs on Snowflake rather than beside it: no runtime to own, a task graph for scheduling, documentation that shows up in Horizon, and a semantic view defined in dbt that Cortex Analyst can answer questions from.
 
+## How the project works
+
+### dbt in one paragraph
+
+dbt builds warehouse tables from SQL files. Each `.sql` file is a **model**: a single `SELECT` describing what a table should contain. dbt works out which models depend on which, runs them in order and creates each one as a table or view, so you never write `CREATE TABLE` yourself. YAML files alongside the SQL hold descriptions and tests. Normally dbt is installed on a laptop or server. Here the whole project is uploaded to Snowflake as one object, `IMF_DBT_DB.DBT_PROJECTS.IMF_WEO`, and `EXECUTE DBT PROJECT` runs it.
+
+### Where the data starts
+
+dbt never calls the internet. The `LOAD_IMF_WEO` stored procedure fetches the WEO from the IMF API and writes three tables in `IMF_DBT_DB.RAW`: every published value, the IMF's indicator list and its country list. dbt only reads `RAW`. In dbt terms these are **sources**, declared in `dbt/models/staging/_imf__sources.yml`.
+
+### Project structure
+
+```
+imf-dbt/
+├── setup/            plain SQL, run once: role, database, API access, loader, schedule, teardown
+└── dbt/              the dbt project
+    ├── dbt_project.yml            settings, including which folder builds into which schema
+    ├── dbt_projects_profiles.yml  how dbt connects (read by Snowflake only)
+    ├── env.yml                    picks role, warehouse and DEV or PROD at run time (Snowflake only)
+    ├── packages.yml               one add-on package, for semantic views
+    ├── seeds/                     small CSVs loaded as tables
+    ├── models/
+    │   ├── staging/               bronze: tidy the raw tables
+    │   ├── intermediate/          silver helper: latest release only
+    │   ├── marts/                 silver dimensions and fact, gold reporting tables
+    │   ├── semantic/              the semantic view for Cortex Analyst
+    │   └── overview.md            the project page shown in Snowsight
+    ├── snapshots/                 history tracking
+    ├── tests/                     custom data checks
+    └── macros/                    one helper that controls schema naming
+```
+
+### What each file creates in Snowflake
+
+The file name becomes the object name and the folder decides the schema. Schemas are prefixed `DEV_` or `PROD_` by the environment chosen in `env.yml`. A dev build creates:
+
+| dbt file | Snowflake object | Type | What it holds |
+|---|---|---|---|
+| `seeds/imf_unit_dictionary.csv` | `DEV_BRONZE.IMF_UNIT_DICTIONARY` | table | 12 rows turning unit codes like `PT` into "Percent" |
+| `staging/stg_imf__observations.sql` | `DEV_BRONZE.STG_IMF__OBSERVATIONS` | view | Raw values renamed and retyped, nothing more |
+| `staging/stg_imf__indicators.sql` | `DEV_BRONZE.STG_IMF__INDICATORS` | view | The same for the indicator list |
+| `staging/stg_imf__countries.sql` | `DEV_BRONZE.STG_IMF__COUNTRIES` | view | The same for the country list |
+| `staging/stg_imf__units.sql` | `DEV_BRONZE.STG_IMF__UNITS` | view | The same for the unit seed |
+| `marts/dim_entity.sql` | `DEV_SILVER.DIM_ENTITY` | table | One row per country or IMF group, labelled COUNTRY or AGGREGATE |
+| `marts/dim_indicator.sql` | `DEV_SILVER.DIM_INDICATOR` | table | One row per indicator: name, definition, unit and whether it can be summed |
+| `marts/fct_indicator_observations.sql` | `DEV_SILVER.FCT_INDICATOR_OBSERVATIONS` | incremental table | The core table: country, indicator, year and release. About 360,000 rows per release |
+| `intermediate/int_observations_latest_vintage.sql` | `DEV_SILVER.INT_OBSERVATIONS_LATEST_VINTAGE` | view | The fact table filtered to the newest release |
+| `marts/gdp_growth_by_country.sql` | `DEV_GOLD.GDP_GROWTH_BY_COUNTRY` | table | Real GDP growth per country and year, with a five-year average |
+| `marts/country_economic_indicators.sql` | `DEV_GOLD.COUNTRY_ECONOMIC_INDICATORS` | table | One row per country and year, nine headline indicators side by side |
+| `semantic/imf_weo_economy.sql` | `DEV_GOLD.IMF_WEO_ECONOMY` | semantic view | Business definitions Cortex Analyst answers questions from |
+| `snapshots/snap_gdp_growth_projections.sql` | `DEV_SNAPSHOTS.SNAP_GDP_GROWTH_PROJECTIONS` | table | Dated history of how each forecast changed |
+
+Bronze is tidied but untouched, silver is where the business rules live, and gold is ready for people and tools to query. Each layer reads only from the one before, so a bad number can be traced back a step at a time.
+
+### What dbt adds on top of plain SQL
+
+Models refer to each other with `ref('dim_entity')` rather than a table name. That's how dbt knows `dim_entity` must exist before `gdp_growth_by_country`, and why the same code builds into `DEV_` or `PROD_` without edits. The fact table is incremental, so a run adds only releases it hasn't seen rather than rebuilding everything.
+
+Every build also runs 29 tests and fails if any of them do. Most are simple: no nulls, no duplicates, every country code present in `dim_entity`. The four in `tests/` are custom SQL. The important one checks that the countries' GDP adds up to the IMF's own World total, which catches an IMF group such as the G7 being counted as a country. Every simple check would pass that mistake.
+
+The descriptions in the YAML files are written to Snowflake as table and column comments, so anyone browsing in Snowsight or Horizon sees them without opening the code.
+
 ## Prerequisites
 
 - A Snowflake account with ACCOUNTADMIN for the one-off setup in `01_admin.sql`. External access integrations and granting a new role to your user are account-level, so they need it. Everything else runs as the demo's own role.
