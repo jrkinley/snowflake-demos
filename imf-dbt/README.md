@@ -173,16 +173,16 @@ WHERE status <> 'pass'
 ORDER BY run_started_at DESC;
 ```
 
-The same macro hands the hyperinflation table to Snowflake data quality monitoring. It attaches the `ROW_COUNT` data metric function with an expectation of zero rows, measured every five minutes, so the warning becomes a violated expectation you can see in Snowsight's Data Quality tab or wire to a notification:
+The same macro puts that history under Snowflake data quality monitoring. It creates a small custom data metric function, `FAILING_TESTS_LATEST_RUN`, which counts tests that didn't pass in the latest run, and binds it to the history table with an expectation of zero. With the hyperinflation warning in every run, the expectation `ALL_TESTS_PASS` reports violated with a value of 1, a few minutes after each run writes its results:
 
 ```sql
 SELECT measurement_time, value, expectation_name, expectation_violated
 FROM SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_EXPECTATION_STATUS
-WHERE table_database = 'IMF_DBT_DB' AND table_name = 'WARN_HYPERINFLATION_SINCE_2020'
+WHERE table_database = 'IMF_DBT_DB' AND table_name = 'TEST_RESULTS_HISTORY'
 ORDER BY measurement_time DESC;
 ```
 
-The attachment has to happen in the hook, after dbt has rebuilt the table: a recreated table loses its data metric functions. And the schedule is timed rather than `TRIGGER_ON_CHANGES`, because the table is written once before the function is attached and never changes after, so a change trigger would never fire.
+Why the history table rather than the per-test tables? `store_failures` recreates those on every run, and a recreated table loses its data metric functions and starts a new measurement history. The history table is only ever appended to, so the function is bound once and its results build up run after run. Because every run inserts after the binding exists, it can use `TRIGGER_ON_CHANGES` rather than a timed schedule. The function gives one number for the whole run rather than one per test: binding it `WITHIN GROUP (test_name)` is accepted, but Snowflake then suspends it as invalid without an error. Which test failed is a query on the history table away.
 
 ## Teardown
 

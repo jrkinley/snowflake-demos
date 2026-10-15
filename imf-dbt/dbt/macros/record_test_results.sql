@@ -7,9 +7,9 @@
     <ENV>_AUDIT.TEST_RESULTS_HISTORY, which is created on first use and only
     ever appended to.
 
-    It also re-attaches the Snowflake data metric function on the hyperinflation
-    audit table. store_failures recreates that table each run, and a recreated
-    table loses its DMF associations, so the attachment has to follow the rebuild.
+    It also makes sure the history is monitored by a Snowflake data metric
+    function, so a test that stops passing shows up as a violated expectation
+    in Snowflake data quality monitoring.
 #}
 {% macro record_test_results(results) %}
     {% if not execute %}{{ return('') }}{% endif %}
@@ -58,20 +58,44 @@
     {% endfor %}
     {% do run_query('insert into ' ~ history ~ ' values ' ~ rows | join(',')) %}
 
-    {% set hyper = audit_schema ~ '.WARN_HYPERINFLATION_SINCE_2020' %}
-    {% set found = run_query(
-        "select count(*) from " ~ target.database ~ ".information_schema.tables "
-        ~ "where table_schema = '" ~ generate_schema_name('audit', none) ~ "' "
-        ~ "and table_name = 'WARN_HYPERINFLATION_SINCE_2020'"
+    {#- Monitor the history with a Snowflake data metric function. The history
+        table is only ever appended to, so unlike the per-test audit tables it
+        keeps its DMF binding and its measurement history between runs. The
+        function counts tests that did not pass in the latest run, so any value
+        above zero violates the expectation. Both the function and the binding
+        are created once and left alone after that.
+
+        Not WITHIN GROUP (test_name): Snowflake accepts that binding but then
+        suspends it as invalid, without an error, because of the subquery that
+        finds the latest run. The per-test detail is in the history table. -#}
+    {% set dmf = audit_schema ~ '.FAILING_TESTS_LATEST_RUN' %}
+    {% do run_query("
+        create data metric function if not exists " ~ dmf ~ " (
+            t table(run_started_at timestamp_ntz, status varchar)
+        )
+        returns number
+        comment = 'Tests that did not pass in the latest dbt run'
+        as
+        $$
+            select count_if(status in ('warn', 'fail', 'error'))
+            from t
+            where run_started_at = (select max(run_started_at) from t)
+        $$
+    ") %}
+
+    {% set bound = run_query(
+        "select count(*) from table(" ~ target.database ~ ".information_schema.data_metric_function_references("
+        ~ "ref_entity_name => '" ~ history ~ "', ref_entity_domain => 'TABLE'))"
+        ~ " where metric_name = 'FAILING_TESTS_LATEST_RUN'"
     ) %}
-    {% if found.columns[0].values()[0] > 0 %}
-        {#- A timed schedule, not TRIGGER_ON_CHANGES. The table is written once by
-            store_failures before this hook attaches the DMF, and never changes
-            again, so a change trigger would never fire. -#}
-        {% do run_query("alter table " ~ hyper ~ " set data_metric_schedule = '5 MINUTE'") %}
+    {% if bound.columns[0].values()[0] == 0 %}
+        {#- TRIGGER_ON_CHANGES works here because every run inserts into the
+            history after the binding exists, so each run is measured at once. -#}
+        {% do run_query("alter table " ~ history ~ " set data_metric_schedule = 'TRIGGER_ON_CHANGES'") %}
         {% do run_query(
-            "alter table " ~ hyper ~ " add data metric function snowflake.core.row_count on () "
-            ~ "expectation no_hyperinflation (value = 0)"
+            "alter table " ~ history ~ " add data metric function " ~ dmf
+            ~ " on (run_started_at, status)"
+            ~ " expectation all_tests_pass (value = 0)"
         ) %}
     {% endif %}
 
