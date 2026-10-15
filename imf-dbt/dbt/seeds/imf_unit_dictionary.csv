@@ -1,0 +1,13 @@
+unit_code,unit_label,is_rate
+PT,Percent,true
+IX,Index,true
+XDC,Domestic currency,false
+USD,US dollars,false
+USDPMT,US dollars per metric tonne,false
+USCPP,US cents per pound,false
+USCPL,US cents per litre,false
+USD_BBL,US dollars per barrel,false
+USD_PCM,US dollars per cubic metre,false
+USDPK,US dollars per kilogram,false
+USDBTU,US dollars per million British thermal units,false
+USDPP,US dollars per pound,false

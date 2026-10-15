@@ -1,0 +1,69 @@
+name: 'imf_weo'
+version: '1.0.0'
+config-version: 2
+
+profile: 'imf_weo'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Business rules live in version control, not in someone's head.
+vars:
+  # Fallback only. Each IMF series says which year is its last actual, and the
+  # fact table uses that. This applies to the few series that carry no marker.
+  last_actual_year: 2025
+
+models:
+  imf_weo:
+    # Push model and column descriptions into Snowflake as comments, so they
+    # show up in Horizon and Snowsight for people who never open the repo.
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+      +schema: bronze
+    intermediate:
+      +materialized: view
+      +schema: silver
+    marts:
+      +materialized: table
+      +schema: gold
+      dim_entity:
+        +schema: silver
+      dim_indicator:
+        +schema: silver
+      fct_indicator_observations:
+        +schema: silver
+        +materialized: incremental
+    semantic:
+      +schema: gold
+      # Semantic views carry their own COMMENT and do not support persist_docs.
+      +persist_docs:
+        relation: false
+        columns: false
+
+seeds:
+  imf_weo:
+    +schema: bronze
+    +persist_docs:
+      relation: true
+      columns: true
+
+# +schema rather than +target_schema, so snapshots go through generate_schema_name
+# and get the same DEV_/PROD_ treatment as everything else. With +target_schema
+# they bypass the macro and land in a shared schema, which two engineers would
+# collide in.
+snapshots:
+  imf_weo:
+    +schema: snapshots
+    +persist_docs:
+      relation: true
+      columns: true

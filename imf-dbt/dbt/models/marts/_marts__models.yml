@@ -1,0 +1,166 @@
+version: 2
+
+models:
+  - name: dim_entity
+    description: >
+      Conformed entity dimension. Separates real countries from IMF aggregates
+      so downstream models cannot accidentally add the world to a country-level
+      figure. Countries carry ISO3 codes; IMF aggregates carry G-prefixed codes.
+    columns:
+      - name: country_code
+        description: ISO3 code or IMF aggregate code. Grain of this table.
+        data_tests:
+          - not_null
+          - unique
+      - name: entity_name
+        description: Official name from the IMF codelist, or the code if the codelist has no entry.
+      - name: entity_type
+        description: COUNTRY or AGGREGATE.
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['COUNTRY', 'AGGREGATE']
+      - name: in_codelist
+        description: False if the code appears in the data but not in the IMF codelist, which is worth investigating.
+
+  - name: dim_indicator
+    description: >
+      Indicator dimension, built from the IMF's CL_WEO_INDICATOR codelist plus
+      the unit each indicator is published in. The governed definition of every
+      metric.
+    columns:
+      - name: indicator_code
+        description: IMF WEO indicator code. Grain of this table.
+        data_tests:
+          - not_null
+          - unique
+      - name: indicator_name
+        description: Official indicator name.
+      - name: indicator_description
+        description: Official indicator definition.
+      - name: unit_code
+        description: IMF unit code the indicator is published in.
+      - name: unit_label
+        description: Human-readable unit.
+      - name: display_scale
+        description: Power of ten the IMF displays the indicator in. 9 means billions.
+      - name: is_additive
+        description: False for rates and indexes, which must not be summed across countries.
+      - name: codelist_version
+        description: Codelist version.
+
+  - name: fct_indicator_observations
+    description: >
+      Grain-level fact. One row per country or aggregate, indicator, year and
+      WEO vintage. Incremental, so each new release is added and older releases
+      are kept for comparison.
+    columns:
+      - name: country_code
+        description: ISO3 country code or IMF aggregate code.
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_entity')
+              field: country_code
+      - name: indicator_code
+        description: IMF WEO indicator code.
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('dim_indicator')
+              field: indicator_code
+      - name: observation_year
+        description: Observation year.
+        data_tests:
+          - not_null
+      - name: vintage_published_at
+        description: When the IMF published the vintage. Part of the grain.
+        data_tests:
+          - not_null
+      - name: observation_value
+        description: The published value, in full units.
+      - name: latest_actual_year
+        description: >
+          Last year of actual data for the series, from the IMF's per-series
+          marker, or the last_actual_year variable where the series has none.
+      - name: is_projection
+        description: True when the year is an IMF staff projection rather than actual data.
+        data_tests:
+          - not_null
+      - name: years_ahead_of_actual
+        description: How many years beyond the last actual year. 0 for actuals.
+      - name: vintage_label
+        description: Release name, for example WEO OCT 2026.
+      - name: batch_loaded_at
+        description: When the batch was landed.
+      - name: dbt_updated_at
+        description: When dbt last wrote the row.
+
+  - name: gdp_growth_by_country
+    description: >
+      Real GDP growth by country and year from the latest vintage. Countries
+      only, with a five-year rolling average and a contraction flag.
+    columns:
+      - name: country_code
+        description: ISO3 country code.
+      - name: country_name
+        description: Country name.
+      - name: observation_year
+        description: Observation year.
+      - name: real_gdp_growth_pct
+        description: Real GDP growth, annual percent change (NGDP_RPCH).
+      - name: indicator_name
+        description: Official indicator name.
+      - name: unit_label
+        description: Unit of the growth figure.
+      - name: is_projection
+        description: True when the year is an IMF staff projection.
+      - name: years_ahead_of_actual
+        description: How many years beyond the last actual year.
+      - name: vintage_label
+        description: Release the figure comes from.
+      - name: real_gdp_growth_pct_5yr_avg
+        description: Average real GDP growth over this year and the four before.
+      - name: is_contraction
+        description: True when real GDP shrank.
+      - name: vintage_published_at
+        description: When the IMF published the vintage.
+
+  - name: country_economic_indicators
+    description: >
+      One row per country and year with the headline WEO indicators side by
+      side, from the latest vintage. Currency levels in billions, population in
+      millions. The table the semantic view is built on.
+    columns:
+      - name: country_code
+        description: ISO3 country code.
+        data_tests:
+          - not_null
+      - name: country_name
+        description: Country name.
+      - name: observation_year
+        description: Observation year.
+        data_tests:
+          - not_null
+      - name: gdp_usd_bn
+        description: Gross domestic product at current prices, billions of US dollars (NGDPD).
+      - name: gdp_per_capita_usd
+        description: GDP per capita at current prices, US dollars (NGDPDPC).
+      - name: real_gdp_growth_pct
+        description: Real GDP growth, annual percent change (NGDP_RPCH).
+      - name: inflation_pct
+        description: Consumer price inflation, annual average percent change (PCPIPCH).
+      - name: unemployment_rate_pct
+        description: Unemployment rate, percent of the labour force (LUR).
+      - name: govt_gross_debt_pct_gdp
+        description: General government gross debt, percent of GDP (GGXWDG_NGDP).
+      - name: govt_net_lending_pct_gdp
+        description: General government net lending (+) or borrowing (-), percent of GDP (GGXCNL_NGDP).
+      - name: current_account_pct_gdp
+        description: Current account balance, percent of GDP (BCA_NGDPD).
+      - name: population_mn
+        description: Population, millions (LP).
+      - name: is_projection
+        description: True when the year is an IMF staff projection for real GDP growth.
+      - name: vintage_label
+        description: Release the figures come from.

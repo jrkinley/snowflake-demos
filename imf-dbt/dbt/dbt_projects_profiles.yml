@@ -1,0 +1,29 @@
+# This file is read by dbt Projects on Snowflake. Standard dbt Core ignores it,
+# so your personal ~/.dbt/profiles.yml is untouched and local runs still work.
+# That is the whole point of it: a hybrid team can share one repo.
+#
+# No password, no private key, no authenticator. Authentication comes from the
+# Snowflake session running EXECUTE DBT PROJECT. account and user are required
+# by dbt but unused here.
+imf_weo:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "not needed"
+      user: "not needed"
+      role: "{{ env_var('DBT_CURRENT_ROLE') }}"
+      database: "{{ env_var('DBT_CURRENT_DB') }}"
+      warehouse: "{{ env_var('DBT_CURRENT_WH') }}"
+      schema: "{{ env_var('DBT_CURRENT_SCHEMA') }}"
+      threads: 8
+
+    prod:
+      type: snowflake
+      account: "not needed"
+      user: "not needed"
+      role: "{{ env_var('DBT_CURRENT_ROLE') }}"
+      database: "{{ env_var('DBT_CURRENT_DB') }}"
+      warehouse: "{{ env_var('DBT_CURRENT_WH') }}"
+      schema: "{{ env_var('DBT_CURRENT_SCHEMA') }}"
+      threads: 8
