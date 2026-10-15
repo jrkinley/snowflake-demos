@@ -55,6 +55,8 @@ The file name becomes the object name and the folder decides the schema. Schemas
 | `marts/country_economic_indicators.sql` | `DEV_GOLD.COUNTRY_ECONOMIC_INDICATORS` | table | One row per country and year, nine headline indicators side by side |
 | `semantic/imf_weo_economy.sql` | `DEV_GOLD.IMF_WEO_ECONOMY` | semantic view | Business definitions Cortex Analyst answers questions from |
 | `snapshots/snap_gdp_growth_projections.sql` | `DEV_SNAPSHOTS.SNAP_GDP_GROWTH_PROJECTIONS` | table | Dated history of how each forecast changed |
+| every test | `DEV_AUDIT.<TEST_NAME>` | table | The rows that test failed on its latest run, usually none |
+| `macros/record_test_results.sql` | `DEV_AUDIT.TEST_RESULTS_HISTORY` | table | One row per test per run: status and failure count |
 
 Bronze is tidied but untouched, silver is where the business rules live, and gold is ready for people and tools to query. Each layer reads only from the one before, so a bad number can be traced back a step at a time.
 
@@ -62,7 +64,7 @@ Bronze is tidied but untouched, silver is where the business rules live, and gol
 
 Models refer to each other with `ref('dim_entity')` rather than a table name. That's how dbt knows `dim_entity` must exist before `gdp_growth_by_country`, and why the same code builds into `DEV_` or `PROD_` without edits. The fact table is incremental, so a run adds only releases it hasn't seen rather than rebuilding everything.
 
-Every build also runs 29 tests and fails if any of them do. Most are simple: no nulls, no duplicates, every country code present in `dim_entity`. The four in `tests/` are custom SQL. The important one checks that the countries' GDP adds up to the IMF's own World total, which catches an IMF group such as the G7 being counted as a country. Every simple check would pass that mistake.
+Every build also runs 30 tests and fails if any error-level test does. Most are simple: no nulls, no duplicates, every country code present in `dim_entity`. The five in `tests/` are custom SQL. The important one checks that the countries' GDP adds up to the IMF's own World total, which catches an IMF group such as the G7 being counted as a country. Every simple check would pass that mistake. Each test also stores the rows it failed, covered under "Audit the tests" below.
 
 The descriptions in the YAML files are written to Snowflake as table and column comments, so anyone browsing in Snowsight or Horizon sees them without opening the code.
 
@@ -113,7 +115,7 @@ snow sql -f setup/03_schedule.sql
 
 Everything from here runs as `IMF_DBT_ROLE`, in a worksheet or with `snow sql`.
 
-**Build it.** One statement runs the whole project server-side: 1 seed, 11 models, 1 snapshot and 29 tests, in about 20 seconds.
+**Build it.** One statement runs the whole project server-side: 1 seed, 11 models, 1 snapshot and 30 tests, in about 20 seconds, ending with one expected warning.
 
 ```sql
 USE ROLE IMF_DBT_ROLE;
@@ -154,6 +156,33 @@ EXECUTE TASK IMF_DBT_DB.DBT_PROJECTS.LOAD_IMF_WEO_TASK;
 ```
 
 Run history for every execution, scheduled or not, is in `SNOWFLAKE.ACCOUNT_USAGE.DBT_PROJECT_EXECUTION_HISTORY` and the project's run history in Snowsight.
+
+**Audit the tests.** dbt tests normally report pass or fail in the log and nothing else. Here every test also keeps the rows it failed, because `dbt_project.yml` turns on `store_failures` for all tests and sends them to an `<ENV>_AUDIT` schema, one table per test. Most of those tables are empty, which is the point. One test is meant to find something: `tests/warn_hyperinflation_since_2020.sql` flags consumer prices rising more than 100% in a year since 2020. It's set to `warn`, so the build still succeeds, and in the October 2026 vintage it catches 20 country-years across Argentina, Lebanon, Sudan, Venezuela and Zimbabwe.
+
+```sql
+SELECT * FROM IMF_DBT_DB.DEV_AUDIT.WARN_HYPERINFLATION_SINCE_2020
+ORDER BY inflation_pct DESC;
+```
+
+`store_failures` replaces each table on every run, so on its own it only knows about the latest failures. The `record_test_results` macro runs at the end of every invocation and adds the history, one row per test per run, appended to `TEST_RESULTS_HISTORY`:
+
+```sql
+SELECT run_started_at, target_name, test_name, status, failures
+FROM IMF_DBT_DB.DEV_AUDIT.TEST_RESULTS_HISTORY
+WHERE status <> 'pass'
+ORDER BY run_started_at DESC;
+```
+
+The same macro hands the hyperinflation table to Snowflake data quality monitoring. It attaches the `ROW_COUNT` data metric function with an expectation of zero rows, measured every five minutes, so the warning becomes a violated expectation you can see in Snowsight's Data Quality tab or wire to a notification:
+
+```sql
+SELECT measurement_time, value, expectation_name, expectation_violated
+FROM SNOWFLAKE.LOCAL.DATA_QUALITY_MONITORING_EXPECTATION_STATUS
+WHERE table_database = 'IMF_DBT_DB' AND table_name = 'WARN_HYPERINFLATION_SINCE_2020'
+ORDER BY measurement_time DESC;
+```
+
+The attachment has to happen in the hook, after dbt has rebuilt the table: a recreated table loses its data metric functions. And the schedule is timed rather than `TRIGGER_ON_CHANGES`, because the table is written once before the function is attached and never changes after, so a change trigger would never fire.
 
 ## Teardown
 

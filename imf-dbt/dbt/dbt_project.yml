@@ -61,6 +61,18 @@ seeds:
 # and get the same DEV_/PROD_ treatment as everything else. With +target_schema
 # they bypass the macro and land in a shared schema, which two engineers would
 # collide in.
+# Every test keeps the rows it failed, in a table under <ENV>_AUDIT named after
+# the test. The tables are replaced on each run, so record_test_results adds a
+# run-by-run history alongside them.
+data_tests:
+  imf_weo:
+    +store_failures: true
+    +store_failures_as: table
+    +schema: audit
+
+on-run-end:
+  - "{{ record_test_results(results) }}"
+
 snapshots:
   imf_weo:
     +schema: snapshots

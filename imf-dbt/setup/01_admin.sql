@@ -63,3 +63,8 @@ GRANT USAGE ON INTEGRATION IMF_DBT_DEPS_ACCESS TO ROLE IMF_DBT_ROLE;
 
 -- Lets the role schedule the pipeline with a task.
 GRANT EXECUTE TASK ON ACCOUNT TO ROLE IMF_DBT_ROLE;
+
+-- Lets the role attach Snowflake data metric functions to the dbt test audit
+-- tables, and use the built-in ones such as ROW_COUNT.
+GRANT EXECUTE DATA METRIC FUNCTION ON ACCOUNT TO ROLE IMF_DBT_ROLE;
+GRANT DATABASE ROLE SNOWFLAKE.DATA_METRIC_USER TO ROLE IMF_DBT_ROLE;
