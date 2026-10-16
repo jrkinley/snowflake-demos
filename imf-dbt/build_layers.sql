@@ -43,3 +43,17 @@ EXECUTE DBT PROJECT IMF_DBT_DB.DBT_PROJECTS.IMF_WEO ARGS = 'run --select fct_ind
 SELECT COUNT(*), MAX(dbt_updated_at) FROM IMF_DBT_DB.DEV_SILVER.FCT_INDICATOR_OBSERVATIONS;
 
 EXECUTE DBT PROJECT IMF_DBT_DB.DBT_PROJECTS.IMF_WEO ARGS = 'run --select fct_indicator_observations --full-refresh';
+
+-- 5. Descriptions in Horizon.
+-- persist_docs (dbt_project.yml) writes each description in the model YAML as
+-- a Snowflake comment on every build, so Horizon and Snowsight show them with
+-- no separate step. DIM_ENTITY's come from models/marts/_marts__models.yml.
+-- Same view in Snowsight: Catalog, Explorer, IMF_DBT_DB, DEV_SILVER, DIM_ENTITY.
+SELECT table_name, comment
+FROM IMF_DBT_DB.INFORMATION_SCHEMA.TABLES
+WHERE table_schema = 'DEV_SILVER' AND table_name = 'DIM_ENTITY';
+
+SELECT column_name, data_type, comment
+FROM IMF_DBT_DB.INFORMATION_SCHEMA.COLUMNS
+WHERE table_schema = 'DEV_SILVER' AND table_name = 'DIM_ENTITY'
+ORDER BY ordinal_position;
