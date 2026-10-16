@@ -7,7 +7,16 @@
 -- semantic view syntax without waiting for a package release. ref() still
 -- resolves per environment and puts the view in the dbt DAG, so lineage runs from
 -- the IMF API all the way to the questions Cortex Analyst answers.
+--
+-- The blocks below build up the business model Cortex Analyst reasons over:
+-- logical tables, how they join, row-level facts, the dimensions to group and
+-- filter by, and the aggregated metrics people ask for. Names and synonyms are
+-- the vocabulary Analyst matches questions against; comments are its context.
 
+-- TABLES: the logical tables, each an alias over a physical table built by dbt.
+-- The primary key states the grain, which Analyst uses to aggregate correctly
+-- and to join. economy is one row per country and year; countries is one row
+-- per country.
 TABLES (
     economy AS {{ ref('country_economic_indicators') }}
         PRIMARY KEY (country_code, observation_year)
@@ -18,10 +27,16 @@ TABLES (
         COMMENT = 'Countries published in the IMF WEO'
 )
 
+-- RELATIONSHIPS: how the logical tables join. Many economy rows to one country,
+-- through country_code. Analyst writes the join itself, so a question about
+-- country names and GDP never needs one spelled out.
 RELATIONSHIPS (
     economy_to_countries AS economy(country_code) REFERENCES countries(country_code)
 )
 
+-- FACTS: row-level numeric values, the inputs metrics aggregate. Not exposed for
+-- grouping. growth_x_gdp is derived here, growth times GDP per row, so the
+-- GDP-weighted growth metric can divide one sum by another.
 FACTS (
     economy.gdp_usd_bn AS economy.gdp_usd_bn
         COMMENT = 'GDP at current prices, billions of US dollars',
@@ -31,6 +46,9 @@ FACTS (
         COMMENT = 'Real growth weighted by nominal GDP, used for GDP-weighted averages'
 )
 
+-- DIMENSIONS: the attributes questions group and filter by: country, year,
+-- projection or actual, and release. Synonyms map everyday words ("nation",
+-- "forecast") onto them.
 DIMENSIONS (
     countries.country_name AS countries.entity_name
         WITH SYNONYMS = ('country', 'nation', 'economy name')
@@ -49,6 +67,10 @@ DIMENSIONS (
         COMMENT = 'The WEO release the figures come from'
 )
 
+-- METRICS: named aggregations, the numbers people ask for. Each one fixes how a
+-- measure rolls up, which is where the business rules live: GDP and population
+-- sum, rates average and are never summed, and growth across a group can be
+-- either a simple average or weighted by GDP.
 METRICS (
     economy.total_gdp_usd_bn AS SUM(economy.gdp_usd_bn)
         WITH SYNONYMS = ('GDP', 'economic output', 'size of the economy')
@@ -79,10 +101,16 @@ METRICS (
         COMMENT = 'Number of countries'
 )
 
+-- COMMENT describes the view; AI_SQL_GENERATION is standing guidance Analyst
+-- applies to every question it turns into SQL.
 COMMENT = 'IMF World Economic Outlook headline indicators for Cortex Analyst. Latest vintage, countries only, 1980 to five years ahead.'
 
 AI_SQL_GENERATION 'Rates such as growth, inflation, unemployment and debt are percentages and must never be summed across countries; use the AVG metrics, or gdp_weighted_growth_pct for growth across a group. Years after the latest actual year are IMF projections: say so when an answer includes them. GDP is in billions of US dollars at current prices.'
 
+-- AI_VERIFIED_QUERIES: questions paired with SQL known to be right. Analyst uses
+-- them as worked examples for similar questions, and ONBOARDING_QUESTION shows
+-- them as suggested starting questions. {{ this }} resolves to the view itself
+-- in the current environment.
 AI_VERIFIED_QUERIES (
     largest_economies AS (
         QUESTION 'What were the ten largest economies by GDP in 2025?'
