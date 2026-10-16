@@ -4,6 +4,11 @@ config-version: 2
 
 profile: 'imf_weo'
 
+# Fails the run on any other dbt version. A Snowsight deploy doesn't pin one,
+# so the object falls back to the account's DEFAULT_DBT_VERSION; this turns
+# that into an immediate error rather than a quiet run on the wrong version.
+require-dbt-version: [">=1.12.0", "<1.13.0"]
+
 model-paths: ["models"]
 seed-paths: ["seeds"]
 snapshot-paths: ["snapshots"]
