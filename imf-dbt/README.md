@@ -104,6 +104,16 @@ snow dbt deploy imf_weo --source . \
 
 If you'd rather not use the CLI, the same thing works in SQL: `PUT` the contents of `dbt/` to a stage, then `CREATE DBT PROJECT IMF_DBT_DB.DBT_PROJECTS.IMF_WEO FROM '@<stage>' DBT_VERSION = '1.12.3' EXTERNAL_ACCESS_INTEGRATIONS = (IMF_DBT_DEPS_ACCESS)`. Redeploying is `ALTER DBT PROJECT ... DEPLOY FROM '@<stage>'`.
 
+To deploy from a Snowsight workspace instead, pull the workspace to the latest `main` first, because a deploy copies the workspace as it stands. Then choose Connect, Deploy dbt project, and tick Run dbt deps with `IMF_DBT_DEPS_ACCESS`. Snowsight doesn't pin a dbt version, so the object takes the account default (`DEFAULT_DBT_VERSION`). Set it straight after the first deploy:
+
+```sql
+ALTER DBT PROJECT IMF_DBT_DB.DBT_PROJECTS.IMF_WEO SET
+  DBT_VERSION = '1.12.3',
+  EXTERNAL_ACCESS_INTEGRATIONS = (IMF_DBT_DEPS_ACCESS);
+```
+
+Whichever route you use, `require-dbt-version` in `dbt_project.yml` stops any run on a version other than 1.12, and `SHOW DBT PROJECTS IN SCHEMA IMF_DBT_DB.DBT_PROJECTS` shows the version the object is on.
+
 Finally, create the schedule, which stays suspended until you resume it:
 
 ```bash
