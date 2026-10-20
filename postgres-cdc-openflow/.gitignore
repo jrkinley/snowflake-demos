@@ -1,0 +1,8 @@
+# The WEO export lives in ~/.cache/openflow-weo-demo/, outside this directory, so it is
+# neither committed nor picked up when publishing the skill to the catalog, where the
+# per-file stage limit is 2 MB and the xlsx is over 5 MB.
+#
+# This stays as a guard in case anyone points --data-dir back in here.
+data/
+config.json
+*.jar

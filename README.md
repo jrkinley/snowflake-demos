@@ -93,3 +93,4 @@ Keep this table in sync with the folders. One row per demo.
 | Demo | Outcome | Products | Kind | Last verified |
 |------|---------|----------|------|---------------|
 | [imf-dbt](imf-dbt/) | Turn the IMF World Economic Outlook into governed, documented metrics with dbt running inside Snowflake | dbt Projects on Snowflake, Snowpark Python, external access, tasks, Horizon, semantic views, Cortex Analyst | Project | 2026-10-15 |
+| [postgres-cdc-openflow](postgres-cdc-openflow/) | Stream changes from a Snowflake Postgres database into Snowflake in near real time with the Openflow gen 2 PostgreSQL CDC connector, built entirely from SQL objects | Openflow, Snowflake Postgres, network rules, secrets | Skill | 2026-09-28 |
