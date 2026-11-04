@@ -1,0 +1,5 @@
+packages:
+  # Emits native Snowflake semantic views as dbt models. Snowflake runs dbt deps
+  # during deployment using the ADE_DEMO_DEPS_ACCESS external access integration.
+  - package: Snowflake-Labs/dbt_semantic_view
+    version: [">=1.0.0", "<2.0.0"]
