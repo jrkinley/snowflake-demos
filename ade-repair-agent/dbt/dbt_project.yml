@@ -1,0 +1,12 @@
+name: coco_de_guide
+version: '1.0.0'
+config-version: 2
+
+profile: coco_de_guide
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+models:
+  coco_de_guide:
+    +materialized: table

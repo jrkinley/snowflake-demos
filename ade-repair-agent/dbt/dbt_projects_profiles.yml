@@ -1,0 +1,17 @@
+# Read by dbt Projects on Snowflake only. Standard dbt Core ignores this file,
+# so the guide's local ~/.dbt/profiles.yml flow (profiles.yml.example) still works.
+#
+# No credentials. Authentication comes from the Snowflake session running
+# EXECUTE DBT PROJECT; account and user are required by dbt but unused here.
+coco_de_guide:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "not needed"
+      user: "not needed"
+      role: DEMO_ROLE
+      database: DEMO_DB
+      warehouse: DEMO_WH
+      schema: TPCH_TRANSFORMED
+      threads: 4
