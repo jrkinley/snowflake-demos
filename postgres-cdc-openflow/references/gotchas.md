@@ -33,8 +33,6 @@ GRANT CREATE STREAM ON FUTURE SCHEMAS IN DATABASE WEO_CDC_DEMO TO ROLE OPENFLOW_
 **Granting it afterwards is not enough**, see the next entry. Get the grants right before
 the first `START`.
 
-*Verified 23 September 2026. This is the single most expensive failure in the build, because
-every other indicator says the pipeline is healthy.*
 
 ## A table stuck in FAILED never retries
 
@@ -59,14 +57,13 @@ DROP TABLE IF EXISTS WEO_CDC_DEMO.WEO.OBSERVATIONS;
 DROP TABLE IF EXISTS WEO_CDC_DEMO.WEO.OBSERVATIONS_JOURNAL_<n>_1;
 ```
 
-Then recreate, patch the config, upload both files, commit and start. About five minutes,
+Then recreate, rebuild the bundle and create the connector from it. About five minutes,
 and the snapshot re-runs from scratch.
 
 Two notes. `DROP` is rejected while the connector is `TERMINATING`, so wait for
 `TERMINATED` before dropping. And the journal table's numeric suffix changes on the
 rebuild, which is one reason never to hardcode it.
 
-*Verified 23 September 2026.*
 
 ## LS on versions/live fails with "version live is not found"
 
@@ -91,7 +88,6 @@ and the JDBC driver, so versions are self-contained bundles.
 Provisioning is unaffected: a freshly created connector has a live version, which is why the
 provision step uses `versions/live` and is correct to.
 
-*Verified 24 September 2026.*
 
 ## START_FAILED blaming several Source properties that are plainly set
 
@@ -141,8 +137,6 @@ The staged files carry over to the new version, so there is nothing to re-upload
 section, suspect the section rather than the properties, and search the event table for
 "Failed to replace working configuration".
 
-*Verified 24 September 2026, caused by moving the secret between schemas without moving the
-usage grant.*
 
 ## The connector accepts START, then sits in START_FAILED
 
@@ -175,7 +169,6 @@ hit it, the JAR must be uploaded to the **same connector version** as the config
 account with `OPENFLOW_CDC_ROLE`, `WEO_CDC_DEMO` and `OPENFLOW_WH`, the Snowflake half is
 fine and the problem is the source half. The destination connects before the source does.
 
-*Verified.* The `assetIds` format is undocumented and was established by trying it.
 
 ## CDC replicates nothing, and nothing anywhere reports an error
 
@@ -192,7 +185,6 @@ this cannot happen if you use it. To check by hand:
 SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = 'openflow';
 ```
 
-*Verified.*
 
 ## CREATE NETWORK RULE rejects a host that looks fine
 
@@ -206,7 +198,6 @@ pre-create a rule for an instance that does not exist yet.
 provisioning. Where a host changes on every rebuild and you want a stable rule, a wildcard
 works, but a Postgres instance hostname has no stable suffix worth wildcarding.
 
-*Verified.*
 
 ## ALTER START is rejected right after COMMIT
 
@@ -217,7 +208,6 @@ works, but a Postgres instance hostname has no stable suffix worth wildcarding.
 **Fix.** `SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_CONNECTORS(600, '<fqn>')` between `COMMIT`
 and `START`. Teardown needs the same waits, with the caveat in the next entry.
 
-*Verified.*
 
 ## DROP is rejected straight after TERMINATE, even though the wait returned OK
 
@@ -232,7 +222,6 @@ the object has reached its terminal state.
 and check `SHOW` reports `TERMINATED` first. A moment's gap is enough; retry the `DROP` once if
 it is rejected. Applies to runtimes as well as connectors.
 
-*Verified 23 Sep 2026, on teardown of `WEO_PG_CDC`.*
 
 ## The journal table does not exist
 
@@ -253,8 +242,6 @@ WHERE TABLE_SCHEMA = 'WEO' AND TABLE_NAME ILIKE 'OBSERVATIONS_JOURNAL%';
 An existing journal holding **zero rows after a change has been made** is a different
 problem: see the `CREATE STREAM` entry at the top.
 
-*Verified 23 September 2026: created at snapshot, and the suffix changed from `1790195723_1`
-to `1790196923_1` across a rebuild.*
 
 ## ACCOUNTADMIN cannot create objects in OPENFLOW_GEN2.CONTROL
 
@@ -275,7 +262,6 @@ The secret was originally created in `OPENFLOW_GEN2.CONTROL` as `OPENFLOWADMIN`.
 but it needed a role switch to create *and* another to drop, and it survived as an orphan
 holding a live credential if teardown stopped part way.
 
-*Verified 23 September 2026.*
 
 ## Repeated browser re-authentication during a build
 
@@ -287,11 +273,8 @@ via `client_store_temporary_credential = true`, and when that cache is missed yo
 prompt. Nothing about the build is wrong; there are simply too many separate CLI calls.
 
 **Fix.** Use `snowflake_sql_execute`, which runs on the connection already established in the
-session and needs no token. Keep `snow` for `snow stage copy` and the two scripts, which have no
-SQL equivalent.
+session and needs no token. Keep `snow` for `snow stage copy` and the one credential command.
 
-*Verified 28 September 2026, on a provision that prompted repeatedly until SQL moved off the
-CLI.*
 
 ## Only the last statement's result comes back from a multi-statement call
 
@@ -309,7 +292,6 @@ One thing this costs you: per-statement confirmation. A `snow sql -f` run prints
 statement, so a failure part-way through a long grant block is visible. Through the tool it is
 not, so verify the outcome afterwards rather than trusting silence.
 
-*Verified 28 September 2026.*
 
 ## snow sql cannot find the connection
 
@@ -323,40 +305,6 @@ does not exist, which looks like a default but is not one.
 `-c <name>` on every CLI invocation. Do not assume a default exists, and do not assume the
 connection is named after the account.
 
-*Verified 23 September 2026. The dangling `default_connection_name` was seen on 28 September
-2026, where it pointed at a connection name with no matching connection block.*
-
-## Running the source SQL file prints the Postgres password
-
-**Symptom.** The password appears in the terminal, the session transcript, and anywhere that
-output is shared.
-
-**Cause.** `CREATE POSTGRES INSTANCE` returns it in the `access_roles` column, so any method
-that displays the statement's output exposes it.
-
-**Fix.** `scripts/create-postgres-instance.py` runs that statement itself, parses the result,
-and writes the password to `~/.pgpass` and a Snowflake secret without printing it. Everything
-the instance depends on is ordinary SQL in the step 3 block of `provision/SKILL.md`, which stops short of the
-`CREATE` for exactly this reason and is safe to run whole.
-
-*Verified 23 September 2026, by doing exactly that during the build.*
-
-## A commented SQL file cannot be split on semicolons
-
-**Symptom.** Snowflake rejects a statement that is obviously prose, for example "syntax error
-line 1 at position 0 unexpected 'if'".
-
-**Cause.** Splitting on `;` before stripping comments cuts any comment containing a semicolon
-in half, and the orphaned second half no longer starts with `--`, so a comment filter misses
-it.
-
-**Fix.** Do not hand-roll a SQL splitter. Send the whole block to `snowflake_sql_execute`, which
-parses properly, or write it to a temporary file and use `snow sql -f`. Related: each `snow sql`
-invocation is its own session, so a `USE ROLE` applies only to statements sent in the same call.
-The same holds for the direct tool: a `USE ROLE` in one call does not carry to the next, so
-include it at the top of any batch that needs it.
-
-*Verified 23 September 2026.*
 
 ## CREATE POSTGRES INSTANCE fails with "Internal error occurred"
 
@@ -366,7 +314,6 @@ include it at the top of any batch that needs it.
 
 **Fix.** Nothing is left behind. Confirm with `SHOW POSTGRES INSTANCES` and retry once.
 
-*Verified, seen once.*
 
 ## You cannot query your own demo data
 
@@ -380,7 +327,6 @@ owns them. `ACCOUNTADMIN` does not inherit ownership of objects created by anoth
 `ACCOUNTADMIN` in the step 5 block of `provision/SKILL.md`. They must be in place before the connector
 starts, because `FUTURE` grants do not apply retroactively.
 
-*Verified.*
 
 ## A single-row change takes up to a minute to appear
 
@@ -388,10 +334,9 @@ starts, because `FUTURE` grants do not apply retroactively.
 
 **Cause.** The default merge schedule is `0 * * * * ?`, once a minute on the zero second.
 
-**Fix.** The patcher sets `* * * * * ?`. Observed end to end latency is then 25 to 30
+**Fix.** The template sets `* * * * * ?`. Observed end to end latency is then 25 to 30
 seconds, so pace the narration for that rather than promising instant.
 
-*Verified.*
 
 ## Editing the connector config appears to do nothing
 
@@ -407,7 +352,6 @@ ALTER OPENFLOW CONNECTOR OPENFLOW_GEN2.CONTROL.WEO_PG_CDC ADD LIVE VERSION FROM 
 -- download, edit, upload, then COMMIT again, or ABORT
 ```
 
-*Verified.*
 
 ## Inspecting connector components fails
 
@@ -420,7 +364,6 @@ Troubleshooting mode for this component to be accessible."
 needing it: the event table plus `SYSTEM$GET_DBT_LOG`-style log access covers most
 diagnosis.
 
-*Verified.*
 
 ## Filtering the event table to one runtime returns nothing useful
 
@@ -438,7 +381,6 @@ FROM <event_table>
 WHERE ...;
 ```
 
-*Verified.* This is a known product gap, not a configuration mistake.
 
 ## Snowsight cannot GET or PUT on the connector stage
 
@@ -448,7 +390,6 @@ WHERE ...;
 
 **Fix.** `snow stage copy`.
 
-*Verified.*
 
 ## Gen 2 objects are invisible to the tooling you would reach for
 
@@ -466,4 +407,3 @@ One improvement worth quoting the other way: `USAGE` on a deployment does **not*
 visibility of its runtimes, and a user needs a privilege on a deployment even to see it
 listed. That makes multi-team isolation enforceable rather than a matter of trust.
 
-*Verified.*

@@ -1,457 +1,382 @@
 ---
 name: openflow-gen2-pg-cdc-provision
-description: "Part 1 of the Openflow gen 2 PostgreSQL CDC demo: build the Postgres source, load the WEO dataset, and create the runtime and connector. Not customer-facing."
+description: "Part 1 of the Openflow gen 2 PostgreSQL CDC demo: reuse or create the Openflow and Postgres infrastructure with SQL, load the IMF WEO dataset, and start the connector. Not customer-facing."
 parent_skill: postgres-cdc-openflow
 ---
 
 # Part 1: Provision
 
-## When to load
+Not customer-facing. 20 to 30 minutes, most of it waiting on Snowflake.
 
-Router Step 0 found no working connector, or the user asked to rebuild.
+`<NAME>` placeholders are parameters from the router. Substitute the resolved value from
+`state.json` everywhere, including inside SQL and file paths. `<SKILL_DIR>` is the skill root.
 
-Not customer-facing. Print progress plainly; there is no audience to protect.
+## How each step runs
 
-Read [../references/provision.md](../references/provision.md) before starting. The steps below
-are the sequence; that file is why each one is where it is.
+Every step follows the same pattern, so the SE always knows what is about to happen:
 
-`<SKILL_DIR>` is the skill root, resolved by the router. Every path below is relative to it.
+1. **Say what the step does** in one sentence.
+2. **Show the exact SQL or command**, with values substituted, in a fenced block.
+3. **Stop for approval** with `ask_user_question`: `Run it` / `Skip, already done` / `Stop here`.
+   Skip only gates the step; never skip a verification query.
+4. Run it, show the verification result, and update `state.json` (`created` gets each new object).
 
-## How to run SQL
+Read-only discovery and verification queries run without a gate. Anything that creates, alters
+or costs money gets one. If a statement fails, show the error, check
+[../references/gotchas.md](../references/gotchas.md), and stop. Do not improvise fixes.
 
-**Use the `snowflake_sql_execute` tool, not `snow sql`.** It runs against the connection already
-established in the session, so it needs no token of its own. Every `snow sql` invocation is a
-separate process that must authenticate, and on an OAuth connection that means a browser prompt
-each time. Over a build this long that is dozens of interruptions.
+## Step 1: Reuse or create (one gate)
 
-Two things still need the CLI, because neither has a SQL equivalent:
-
-- `snow stage copy`, for the connector's config and JDBC driver in step 7.
-- The two scripts in `scripts/`, which manage their own connections.
-
-Both take `-c <connection>`, resolved by the router.
-
-Where a step below shows several statements together, send them as one call. Fewer, larger calls
-beat many small ones.
-
-Two things to know about batching. The tool returns **only the last statement's result**, so put
-the statement whose output you want at the end, and split the call when you need two result sets.
-And you lose the per-statement status lines `snow sql -f` prints, so a failure part-way through a
-long grant block is not obvious. Verify the outcome afterwards rather than trusting silence. A
-`USE ROLE` applies only within the call it appears in, so repeat it at the top of each batch that
-needs it.
-
-## 1. Preflight and load the dataset
-
-The router has already resolved `<SKILL_DIR>` and the `snow` connection name.
-
-Check `psql` and `uv` are present, and that your role reaches `ACCOUNTADMIN`.
-
-Confirm the three reused objects exist, because the grants in step 5 fail without them:
+Discover first, all read-only:
 
 ```sql
-SHOW SCHEMAS LIKE 'CONTROL' IN DATABASE OPENFLOW_GEN2;
-SHOW ROLES LIKE 'OPENFLOW_CDC_ROLE';
-SHOW WAREHOUSES LIKE 'OPENFLOW_WH';
+SHOW OPENFLOW DEPLOYMENTS;
 ```
-
-Then load the WEO export. **This is the real load, not a check** — it parses the xlsx and
-writes the CSV that step 4 copies into Postgres:
-
-```bash
-<SKILL_DIR>/scripts/load-weo-data.py
-```
-
-Doing it first is deliberate. If the export is missing you find out now, rather than after
-spending two minutes building a Postgres instance with nothing to put in it.
-
-Exit 2 means no export is present, and it has printed the download steps. **Stop there and
-show them.** Exit 3 means the file is the wrong shape; show what it printed.
-
-Report the counts it prints. Do not state an expected figure: a new WEO vintage changes all of
-them.
-
-The dataset lives in `~/.cache/openflow-weo-demo/`, deliberately outside the skill directory:
-the xlsx alone is over the 2 MB per-file stage limit, so keeping it here would break publishing
-the skill to the catalog.
-
-## 2. Choose the deployment
-
-From the `SHOW OPENFLOW DEPLOYMENTS` output the router already has, pick the gen 2 deployment.
-
-**If exactly one exists, say which one you are using and move on.** A question with one
-possible answer is friction, not a checkpoint. Ask only when there are two or more, or when the
-user might want a new one, and then say both of these:
-
-- The account cap is three deployments across both generations, gen 1 data planes included.
-- An idle deployment costs around 2.64 credits a day with no runtime under it, and nothing in
-  Snowflake will chase it. Resource monitors do not cover gen 2 compute pools and gen 2 objects
-  cannot be added to a budget.
-
-**Record whether you created it.** Teardown only drops what this skill made.
-
-The runtime is chosen and created together in step 6, where it belongs: it attaches its
-external access integration inline and that needs a Postgres hostname that does not exist yet.
-
-## 3. Postgres source
-
-Offer to reuse an existing instance if `SHOW POSTGRES INSTANCES` listed one.
-
-Everything the instance depends on is ordinary SQL, so run it directly. Order matters and is not
-obvious: the database holds the ingress network rule, the policy references that rule, and the
-instance references the policy. Teardown unwinds in reverse.
-
 ```sql
-USE ROLE ACCOUNTADMIN;
-
-CREATE DATABASE IF NOT EXISTS WEO_CDC_DEMO
-  COMMENT = 'Openflow gen 2 Postgres CDC demo. Destination tables, ingress rule and secret.';
-
-CREATE SCHEMA IF NOT EXISTS WEO_CDC_DEMO.WEO
-  COMMENT = 'Destination schema. The connector creates the tables inside it.';
-
-CREATE NETWORK RULE IF NOT EXISTS WEO_CDC_DEMO.PUBLIC.WEO_CDC_PG_INGRESS
-  TYPE = IPV4
-  VALUE_LIST = ('0.0.0.0/0')
-  MODE = POSTGRES_INGRESS;
-
-CREATE NETWORK POLICY IF NOT EXISTS WEO_CDC_PG_POLICY
-  ALLOWED_NETWORK_RULE_LIST = ('WEO_CDC_DEMO.PUBLIC.WEO_CDC_PG_INGRESS');
+SHOW OPENFLOW RUNTIMES IN ACCOUNT;
 ```
-
-Ingress is wide open so `psql` can reach the instance from a laptop that moves between
-networks. Fine for a demo account, narrow it if you ever leave the instance up.
-
-Then create the instance itself:
-
-```bash
-<SKILL_DIR>/scripts/create-postgres-instance.py -c <connection>
-```
-
-**This one statement is a script rather than inline SQL for a reason.**
-`CREATE POSTGRES INSTANCE` returns the `snowflake_admin` password in its `access_roles` output,
-and `DESCRIBE` will not return it again. Any method that shows the statement's output puts a
-live credential on screen and into the session transcript. The script runs it, writes the
-password to `~/.pgpass` at mode 600 and into a Snowflake secret, and prints neither.
-
-It creates `WEO_CDC_PG` with `BURST_S` on 10 GB, ample for roughly 360,000 rows. `wal_level` is
-already `logical` on a fresh Snowflake Postgres 17 instance, so there is no `ALTER SYSTEM` and
-no restart.
-
-The script returns when the instance is **actually usable**, polling through `CREATING` and
-`FINALIZING` to `READY`. Expect two to three minutes. It ends with a line to run:
-
-```bash
-export PG_HOST=<the host it printed>
-```
-
-**Export it before going further.** The egress network rule, the JDBC URL and both `psql` calls
-all use it, and a hand-typed hostname is the easiest thing to get subtly wrong here. It is also
-cached at `~/.cache/openflow-weo-demo/pg-host`, so a resumed session can recover it without
-rebuilding.
-
-Re-running is safe. If the instance already exists the password is recovered from `~/.pgpass`,
-because Snowflake issues it only once. If `~/.pgpass` has no entry either, the password is
-unrecoverable and the instance must be recreated; the script says so and stops.
-
-On "Internal error occurred", confirm nothing was created with `SHOW POSTGRES INSTANCES` and
-retry once.
-
-## 4. Create the source schema and copy the data in
-
-The CSV already exists from step 1. This step is `psql` only, so the SQL goes in on stdin.
-
-```bash
-export PG_HOST=$(cat ~/.cache/openflow-weo-demo/pg-host)
-PGC="host=$PG_HOST port=5432 user=snowflake_admin dbname=postgres sslmode=require"
-
-psql "$PGC" -v ON_ERROR_STOP=1 <<'SQL'
-CREATE SCHEMA IF NOT EXISTS weo;
-
-DROP TABLE IF EXISTS weo.observations;
-
-CREATE TABLE weo.observations (
-    country_code    VARCHAR(16)     NOT NULL,
-    indicator_code  VARCHAR(64)     NOT NULL,
-    frequency       VARCHAR(16)     NOT NULL,
-    year            SMALLINT        NOT NULL,
-    value           NUMERIC(24, 6)  NOT NULL,
-    PRIMARY KEY (country_code, indicator_code, frequency, year)
-);
-
-ALTER TABLE weo.observations REPLICA IDENTITY DEFAULT;
-
-DROP PUBLICATION IF EXISTS openflow;
-CREATE PUBLICATION openflow FOR TABLE weo.observations;
-
-SELECT pubname, puballtables FROM pg_publication;
-SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = 'openflow';
-SQL
-```
-
-Four things in that block are load-bearing:
-
-- **The primary key is what the connector merges on**, so it has to match the natural grain of
-  an observation.
-- **Column widths come from what the file actually contains**, verified against
-  `WEOApr2026all.xlsx`. Aggregates and commodity series use 4-character country codes such as
-  `G001` (World), so `CHAR(3)` rejects them. `frequency` carries the word `Annual`, not the
-  letter `A`. `SCALE` in the source is a label (`Billions`, `Units`) and values are already
-  expressed in it, so nothing is rescaled.
-- **`REPLICA IDENTITY DEFAULT` uses the primary key**, which the connector needs on UPDATE and
-  DELETE to target the right row. It is already the default; asserting it stops a future schema
-  edit breaking CDC silently.
-- **The publication is created in the same breath as the table.** `DROP TABLE` silently removes
-  a table from a publication, so recreating the table alone leaves CDC replicating nothing with
-  no error anywhere. Keeping them together makes that impossible, and means re-running this
-  block requires re-loading the data.
-
-Then copy the data in. The load file has no header row, so do not add `HEADER true`:
-
-```bash
-psql "$PGC" -v ON_ERROR_STOP=1 \
-  -c "\copy weo.observations (country_code, indicator_code, frequency, year, value) \
-      FROM '$HOME/.cache/openflow-weo-demo/weo-observations.csv' WITH (FORMAT csv)"
-
-psql "$PGC" -c "SELECT COUNT(*) FROM weo.observations"
-```
-
-Confirm the count matches what step 1 reported.
-
-## 5. Destination grants and network access
-
-Substitute the real host for `<PG_HOST>` and send this as one call.
-
-**These grants must be right before the connector first starts.** `CREATE STREAM` in
-particular: without it the snapshot still succeeds and the connector still reports `RUNNING`,
-but the first change flips the table to `FAILED` and granting it afterwards does not recover.
-See `gotchas.md`.
-
 ```sql
-USE ROLE ACCOUNTADMIN;
-
--- The connector writes as OPENFLOW_CDC_ROLE and creates its own objects, so it needs
--- create rights rather than just write rights. CREATE STREAM is the one that is easy to
--- miss and expensive to debug: the connector builds a journal table per replicated table
--- and a stream over it to drive the merge.
-GRANT USAGE ON DATABASE WEO_CDC_DEMO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT CREATE SCHEMA ON DATABASE WEO_CDC_DEMO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT USAGE ON SCHEMA WEO_CDC_DEMO.WEO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT CREATE TABLE ON SCHEMA WEO_CDC_DEMO.WEO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT CREATE STREAM ON SCHEMA WEO_CDC_DEMO.WEO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT CREATE VIEW ON SCHEMA WEO_CDC_DEMO.WEO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT USAGE ON FUTURE SCHEMAS IN DATABASE WEO_CDC_DEMO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT CREATE TABLE ON FUTURE SCHEMAS IN DATABASE WEO_CDC_DEMO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT CREATE STREAM ON FUTURE SCHEMAS IN DATABASE WEO_CDC_DEMO TO ROLE OPENFLOW_CDC_ROLE;
-GRANT USAGE, OPERATE ON WAREHOUSE OPENFLOW_WH TO ROLE OPENFLOW_CDC_ROLE;
-
--- Without these two you cannot read your own demo data: the connector owns the objects
--- it creates and ACCOUNTADMIN does not inherit that. FUTURE grants are not retroactive,
--- so they have to be here rather than after the snapshot.
-GRANT SELECT ON FUTURE TABLES IN DATABASE WEO_CDC_DEMO TO ROLE ACCOUNTADMIN;
-GRANT USAGE ON FUTURE SCHEMAS IN DATABASE WEO_CDC_DEMO TO ROLE ACCOUNTADMIN;
-
--- BOTH secret grants are needed. READ alone is not enough: reading a secret also needs
--- USAGE on the schema holding it. Verified 24 Sep 2026 by omitting the second one, which
--- silently dropped the entire Source config step and produced a START_FAILED blaming four
--- unrelated properties. See gotchas.md.
-GRANT READ ON SECRET WEO_CDC_DEMO.PUBLIC.WEO_CDC_PG_PASSWORD TO ROLE OPENFLOW_CDC_ROLE;
-GRANT USAGE ON SCHEMA WEO_CDC_DEMO.PUBLIC TO ROLE OPENFLOW_CDC_ROLE;
-
--- For the connector's own schema, where the gen 2 object lives.
-GRANT USAGE ON DATABASE OPENFLOW_GEN2 TO ROLE OPENFLOW_CDC_ROLE;
-GRANT USAGE ON SCHEMA OPENFLOW_GEN2.CONTROL TO ROLE OPENFLOW_CDC_ROLE;
-
--- Part 2 step 2 reads the connector's own config.json straight off its internal stage with
--- SELECT, to show that the pipeline's configuration is a queryable Snowflake object rather
--- than something buried in a UI. That needs a JSON file format, created here so nothing has
--- to be built on a shared screen.
-CREATE OR REPLACE FILE FORMAT WEO_CDC_DEMO.PUBLIC.RAW_JSON
-  TYPE = JSON
-  COMMENT = 'Reads the gen 2 connector config.json off its internal stage for the demo.';
-
--- CREATE NETWORK RULE validates that the host resolves, which is why the instance had to
--- come first. It lives in WEO_CDC_DEMO rather than OPENFLOW_GEN2.CONTROL because that
--- schema is owned by OPENFLOWADMIN and ACCOUNTADMIN does not inherit CREATE NETWORK RULE
--- on another role's schema. Keeping it here also means teardown takes it with the database.
-CREATE OR REPLACE NETWORK RULE WEO_CDC_DEMO.PUBLIC.WEO_CDC_PG_EGRESS
-  MODE = EGRESS
-  TYPE = HOST_PORT
-  VALUE_LIST = ('<PG_HOST>:5432');
-
-CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION WEO_CDC_PG_EAI
-  ALLOWED_NETWORK_RULES = (WEO_CDC_DEMO.PUBLIC.WEO_CDC_PG_EGRESS)
-  ENABLED = TRUE
-  COMMENT = 'Lets the gen 2 CDC runtime reach the demo Postgres instance.';
-
-GRANT USAGE ON INTEGRATION WEO_CDC_PG_EAI TO ROLE OPENFLOW_CDC_ROLE;
+SHOW ROLES LIKE '%OPENFLOW%';
 ```
-
-The secret is not created here. `scripts/create-postgres-instance.py` made it in step 3, as
-the only thing that ever sees the password, so the credential has exactly one home and never
-reaches a SQL statement, the screen or shell history.
-
-If `WEO_CDC_DEMO` already exists, offer to truncate `WEO_CDC_DEMO.WEO.OBSERVATIONS` rather
-than dropping the database, which would take the ingress network rule and the secret with it.
-
-## 6. Runtime and connector
-
-**Decide the runtime here, at the point of creation.** If runtimes exist on the chosen
-deployment, offer to reuse one, noting that a reused runtime needs `WEO_CDC_PG_EAI` adding with
-`ALTER OPENFLOW RUNTIME` and that teardown will leave it alone. If none exist, say you are
-creating `WEO_CDC_RT` and move on without asking.
-
-Allow **three to five minutes**: the `CREATE` returns quickly but the wait function dominates,
-which makes this the longest single step in the build. Measured 3m18s, 4m21s and 4m34s.
-
-The external access integration is attached inline, at create time. In gen 1 this was a manual
-step in the Openflow UI that had to happen before any flow could reach the source, and skipping
-it produced `UnknownHostException` or "SSH Connection failed", both of which look like firewall
-faults and are not. Worth saying out loud in the demo.
-
 ```sql
-USE ROLE OPENFLOWADMIN;
-
-CREATE OPENFLOW RUNTIME IF NOT EXISTS OPENFLOW_GEN2.CONTROL.WEO_CDC_RT
-  IN DEPLOYMENT <DEPLOYMENT>
-  NODE_TYPE = MEDIUM
-  NODE_TYPE_TIER = 'M4'
-  MIN_NODES = 1
-  MAX_NODES = 1
-  EXECUTE_AS_ROLE = OPENFLOW_CDC_ROLE
-  EXTERNAL_ACCESS_INTEGRATIONS = (WEO_CDC_PG_EAI)
-  COMMENT = 'Runs the WEO Postgres CDC connector. Demo-scoped, safe to drop.';
-
-SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_RUNTIMES(900, 'OPENFLOW_GEN2.CONTROL.WEO_CDC_RT');
+SHOW WAREHOUSES;
 ```
-
-The connector starts `STOPPED` and in Draft: a live version exists, but there is no committed
-default until you commit one. `SHOW OPENFLOW CONNECTOR DEFINITIONS` lists what the account
-offers, if `OPENFLOW_POSTGRES_CDC` is not present.
-
 ```sql
-USE ROLE OPENFLOWADMIN;
-USE DATABASE OPENFLOW_GEN2;
-USE SCHEMA CONTROL;
-
-CREATE OPENFLOW CONNECTOR IF NOT EXISTS WEO_PG_CDC
-  IN RUNTIME WEO_CDC_RT
-  FROM DEFINITION OPENFLOW_POSTGRES_CDC
-  DISPLAY_NAME = 'WEO Postgres CDC';
+SHOW POSTGRES INSTANCES;
 ```
 
-**Wait for it to leave `CREATING` before touching its stage in step 7.** It takes about a
-minute to settle to `STOPPED`, and the config download in the next step needs the stage to
-exist. Poll rather than assume:
+Then ask **one** `ask_user_question` call with up to four questions, one per component that has
+candidates. Each lists the existing objects as options plus `Create new <default name>`. Put
+what you found in chat text before the call.
 
-```sql
-SHOW OPENFLOW CONNECTORS IN ACCOUNT;   -- expect STOPPED, not CREATING
-```
-
-## 7. Configure and start the connector
-
-The connector's configuration is a versioned `config.json` on its own internal stage, not SQL.
-Download it, edit it, upload it alongside the JDBC driver, then commit. This is the one step
-that needs `snow`, because Snowsight cannot `GET` or `PUT` on connector stages and there is no
-SQL equivalent.
-
-```bash
-curl -sL -o postgresql-42.7.8.jar https://jdbc.postgresql.org/download/postgresql-42.7.8.jar
-
-STAGE='snow://openflow_connector/OPENFLOW_GEN2.CONTROL.WEO_PG_CDC/versions/live'
-snow stage copy -c <connection> "$STAGE/config.json" .
-```
-
-Edit the downloaded `config.json` in place. It holds a `configuration` array of sections, each
-with a `properties` object. **Set only these keys, and only where they already exist.** A key
-you invent is silently ignored, which produces a connector that starts, reports `RUNNING` and
-moves nothing. If a key or section below is missing from the template, stop and say which one:
-the connector definition has changed and the template is the contract.
-
-| Section | Property | Value |
+| Component | Offer | If creating |
 |---|---|---|
-| Source | Source Database Connection URL | `jdbc:postgresql://<PG_HOST>:5432/postgres?ssl=true&sslmode=require` |
-| Source | Source Database User | `snowflake_admin` |
-| Source | Source Database Publication Name | `openflow` |
-| Replication table schema | Included Comma Separated Source Table Names | `weo.observations` |
-| Destination authentication | Snowflake Role | `OPENFLOW_CDC_ROLE` |
-| Destination details | Snowflake Destination Database | `WEO_CDC_DEMO` |
-| Destination details | Snowflake Warehouse | `OPENFLOW_WH` |
-| Tuning | Merge Task Schedule CRON | `* * * * * ?` |
+| Deployment | Gen 2 deployments with status `ACTIVE`. Show each `comment` | `WEO_CDC_DEPLOYMENT`. Say: 5 to 10 minutes, **max three deployments per account across gen 1 and gen 2**, around 2.64 credits a day idle, no budget or resource monitor covers it |
+| Runtime role | Roles granted to `<OPENFLOW_ROLE>` that are an existing runtime's `execute_as_role` | `OPENFLOW_CDC_ROLE` |
+| Warehouse | Warehouses `<RUNTIME_ROLE>` already uses, else any XSMALL or SMALL | `OPENFLOW_WH`, XSMALL, auto-suspend 60 |
+| Runtime | `ACTIVE` runtimes on the chosen deployment | `WEO_CDC_RT`, MEDIUM M4, 1 node. **Default to create**: a reused runtime gets a demo EAI added and teardown leaves it in place |
 
-Ordinary properties take a `value`. Two do not:
+With exactly one candidate, still ask: reuse is the user's decision. With none, say what will be
+created and move on without a question for that component.
 
-- **Source Database Password** carries `"valueType": "SECRET_REFERENCE"`. Set
-  `fullyQualifiedSecretName` to `WEO_CDC_DEMO.PUBLIC.WEO_CDC_PG_PASSWORD`, never a literal
-  password. Confirm the `valueType` before writing it.
-- **Source Database Driver** carries `"valueType": "ASSET_REFERENCE"`. Set `assetIds` to
-  `["postgresql-42.7.8.jar"]`, the bare filename of the JAR uploaded to the **same** connector
-  version. This format is undocumented and was established by trying it.
+`CONTROL_SCHEMA` follows the deployment: the `database_name.schema_name` of its existing runtimes,
+else `OPENFLOW_GEN2.CONTROL` (created in step 2).
 
-Assert each `valueType` as you write, rather than trusting the table. A patch script that
-checks the type and fails loudly on a missing key is better than one that writes blind, because
-a wrong key produces a connector that looks healthy and moves nothing.
+If a `<PG_INSTANCE>` already exists, ask: `Reuse it (reload the data)` / `Drop and recreate` /
+`Stop`. Reusing needs the credential step (step 5) to rotate the password.
 
-Leave **Snowflake Private Key** unset. Under `SNOWFLAKE_MANAGED` there is no key to supply and
-its controller service is expected to fail validation. That is normal and does not stop the
-connector.
+Write `state.json` with the choices before moving on.
 
-The merge CRON default is `0 * * * * ?`, once a minute on the zero second, so a single change
-can sit for up to 60 seconds. Correct for production, painful to narrate live, hence every
-second for the demo.
+## Step 2: Openflow foundations (only what was chosen for creation)
+
+Skip any block whose object was reused. Run as `<ADMIN_ROLE>` unless shown otherwise.
+
+**Deployment**, as `<OPENFLOW_ROLE>`. Long: wait with a poll, not a fixed sleep.
+
+```sql
+USE ROLE <OPENFLOW_ROLE>;
+CREATE OPENFLOW DEPLOYMENT IF NOT EXISTS WEO_CDC_DEPLOYMENT
+  DEPLOYMENT_TYPE = SNOWFLAKE
+  DISPLAY_NAME = 'WEO CDC demo';
+```
+
+Poll `SHOW OPENFLOW DEPLOYMENTS` every 60 s until `ACTIVE`.
+
+**Control schema**:
+
+```sql
+USE ROLE <OPENFLOW_ROLE>;
+CREATE DATABASE IF NOT EXISTS OPENFLOW_GEN2;
+CREATE SCHEMA IF NOT EXISTS OPENFLOW_GEN2.CONTROL;
+```
+
+**Runtime role**:
+
+```sql
+USE ROLE <ADMIN_ROLE>;
+CREATE ROLE IF NOT EXISTS <RUNTIME_ROLE>;
+GRANT ROLE <RUNTIME_ROLE> TO ROLE <OPENFLOW_ROLE>;
+```
+
+**Warehouse**:
+
+```sql
+USE ROLE <ADMIN_ROLE>;
+CREATE WAREHOUSE IF NOT EXISTS <WAREHOUSE>
+  WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
+```
+
+Always, reused or not:
+
+```sql
+USE ROLE <ADMIN_ROLE>;
+GRANT USAGE ON DATABASE <CONTROL_DB> TO ROLE <RUNTIME_ROLE>;
+GRANT USAGE ON SCHEMA <CONTROL_SCHEMA> TO ROLE <RUNTIME_ROLE>;
+GRANT USAGE, OPERATE ON WAREHOUSE <WAREHOUSE> TO ROLE <RUNTIME_ROLE>;
+```
+
+## Step 3: Demo database and Postgres network policy
+
+The database holds the ingress rule, the policy references the rule, and the instance references
+the policy, so this order is enforced.
+
+```sql
+USE ROLE <ADMIN_ROLE>;
+CREATE DATABASE IF NOT EXISTS <DEMO_DB>
+  COMMENT = 'Openflow gen 2 Postgres CDC demo. Safe to drop with the demo.';
+CREATE SCHEMA IF NOT EXISTS <DEMO_DB>.WEO;
+CREATE NETWORK RULE IF NOT EXISTS <DEMO_DB>.PUBLIC.<PG_INSTANCE>_INGRESS
+  TYPE = IPV4 VALUE_LIST = ('0.0.0.0/0') MODE = POSTGRES_INGRESS;
+CREATE NETWORK POLICY IF NOT EXISTS <PG_INSTANCE>_POLICY
+  ALLOWED_NETWORK_RULE_LIST = ('<DEMO_DB>.PUBLIC.<PG_INSTANCE>_INGRESS');
+```
+
+Ingress is open so `psql` works from a laptop on any network. Fine for a demo account. Say so.
+
+## Step 4: Postgres instance
+
+`CREATE POSTGRES INSTANCE` returns the `snowflake_admin` password once. **Never run it bare**:
+the output would put a live password on a screen. This block runs it, stores the password in a
+Snowflake secret and returns only the host. Query history redacts `SECRET_STRING`.
+
+```sql
+EXECUTE IMMEDIATE $$
+DECLARE
+  qid STRING;
+  pw STRING;
+  h STRING;
+BEGIN
+  USE ROLE <ADMIN_ROLE>;
+  CREATE POSTGRES INSTANCE <PG_INSTANCE>
+    COMPUTE_FAMILY = 'BURST_S'
+    STORAGE_SIZE_GB = 10
+    AUTHENTICATION_AUTHORITY = POSTGRES
+    POSTGRES_VERSION = 17
+    NETWORK_POLICY = '<PG_INSTANCE>_POLICY'
+    COMMENT = 'Source for the Openflow gen 2 CDC demo. Safe to drop with the demo.';
+  qid := LAST_QUERY_ID();
+  SELECT "host", PARSE_JSON("access_roles"):snowflake_admin::STRING
+    INTO :h, :pw FROM TABLE(RESULT_SCAN(:qid));
+  EXECUTE IMMEDIATE 'CREATE OR REPLACE SECRET <DEMO_DB>.PUBLIC.<PG_INSTANCE>_PASSWORD '
+    || 'TYPE = GENERIC_STRING SECRET_STRING = ''' || REPLACE(:pw, '''', '''''') || '''';
+  RETURN :h;
+END;
+$$;
+```
+
+Save the returned host as `pg_host` in `state.json`. BURST_S on 10 GB is ample, and `wal_level`
+is already `logical` on a new PG 17 instance, so there is no restart.
+
+Poll every 30 s until `READY`, about three minutes through `CREATING` and `FINALIZING`:
+
+```sql
+DESCRIBE POSTGRES INSTANCE <PG_INSTANCE>
+  ->> SELECT "value" AS state FROM $1 WHERE "property" = 'state';
+```
+
+On "Internal error occurred", check `SHOW POSTGRES INSTANCES` shows nothing and retry once.
+
+## Step 5: Give psql the password, without showing it
+
+psql runs on this laptop, so the password has to land in `~/.pgpass`. The secret cannot be read
+back, so this command **resets** the password and writes the new one to both `~/.pgpass` and
+the secret in one go. It is never echoed and never on a command line. Also use it to recover a
+lost `~/.pgpass`, or before reusing an existing instance.
 
 ```bash
-snow stage copy -c <connection> postgresql-42.7.8.jar "$STAGE/" --overwrite
-snow stage copy -c <connection> config.json "$STAGE/" --overwrite
+CONN=<CONNECTION> PG=<PG_INSTANCE> SECRET=<DEMO_DB>.PUBLIC.<PG_INSTANCE>_PASSWORD HOST=<pg_host>
+PW=$(snow sql -c "$CONN" --format json -q "USE ROLE <ADMIN_ROLE>; ALTER POSTGRES INSTANCE $PG RESET ACCESS FOR 'snowflake_admin'" | jq -r '.[-1][0].password')
+touch ~/.pgpass && chmod 600 ~/.pgpass && grep -v "^$HOST:" ~/.pgpass > ~/.pgpass.tmp
+printf '%s:5432:*:snowflake_admin:%s\n' "$HOST" "$PW" >> ~/.pgpass.tmp && mv ~/.pgpass.tmp ~/.pgpass && chmod 600 ~/.pgpass
+printf "USE ROLE <ADMIN_ROLE>; CREATE OR REPLACE SECRET %s TYPE = GENERIC_STRING SECRET_STRING = '%s';" "$SECRET" "$PW" | snow sql -c "$CONN" -i > /dev/null
+echo "password length ${#PW}, stored in ~/.pgpass and $SECRET"; unset PW
+psql "host=$HOST port=5432 user=snowflake_admin dbname=postgres sslmode=require" -Atc "select version()"
 ```
 
-Then list the stage and **confirm both files are present before committing.** A missing JAR is
-the single most expensive failure here and it gives no useful error. See `gotchas.md`.
+Expect `password length 64` and a PostgreSQL 17 version string. Anything else: stop.
+
+The `snow` calls here prompt for auth on an OAuth connection. That is expected and happens once.
+
+## Step 6: Load the IMF WEO dataset into Postgres
+
+The full World Economic Outlook from the IMF's public SDMX API: about 32 MB and 360,000
+observations, no key. See [../references/weo-data.md](../references/weo-data.md).
+
+```bash
+mkdir -p ~/.cache/openflow-weo-demo
+curl -sS --fail -H 'Accept: application/vnd.sdmx.data+csv;version=2.0.0' \
+  'https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/WEO/+/*?attributes=SCALE,UNIT,PUBLICATION_DATE,LATEST_ACTUAL_ANNUAL_DATA' \
+  -o ~/.cache/openflow-weo-demo/weo.csv && wc -l ~/.cache/openflow-weo-demo/weo.csv
+
+PGC="host=<pg_host> port=5432 user=snowflake_admin dbname=postgres sslmode=require"
+psql "$PGC" -q -v ON_ERROR_STOP=1 -f <SKILL_DIR>/assets/pg-schema.sql
+psql "$PGC" -q -v ON_ERROR_STOP=1 -c "\copy weo.observations_raw FROM '$HOME/.cache/openflow-weo-demo/weo.csv' CSV HEADER"
+psql "$PGC" -v ON_ERROR_STOP=1 -f <SKILL_DIR>/assets/pg-load.sql
+```
+
+About a minute. The last command prints rows, countries and indicators. **Report those figures,
+not expected ones**: every WEO vintage moves them.
+
+`pg-schema.sql` drops and recreates the table, and `pg-load.sql` recreates the publication.
+They must always run together: `DROP TABLE` silently removes a table from its publication, and CDC
+then replicates nothing with no error anywhere.
+
+## Step 7: Destination grants, secret access and egress
+
+**All of this must be in place before the connector's first START.** `CREATE STREAM` especially:
+without it the snapshot succeeds and the connector reports `RUNNING`, but the first change marks
+the table `FAILED` and that state is never retried.
 
 ```sql
-LS 'snow://openflow_connector/OPENFLOW_GEN2.CONTROL.WEO_PG_CDC/versions/live/';
+USE ROLE <ADMIN_ROLE>;
+GRANT USAGE ON DATABASE <DEMO_DB> TO ROLE <RUNTIME_ROLE>;
+GRANT CREATE SCHEMA ON DATABASE <DEMO_DB> TO ROLE <RUNTIME_ROLE>;
+GRANT USAGE, CREATE TABLE, CREATE STREAM, CREATE VIEW ON SCHEMA <DEMO_DB>.WEO TO ROLE <RUNTIME_ROLE>;
+GRANT USAGE, CREATE TABLE, CREATE STREAM ON FUTURE SCHEMAS IN DATABASE <DEMO_DB> TO ROLE <RUNTIME_ROLE>;
 
-ALTER OPENFLOW CONNECTOR OPENFLOW_GEN2.CONTROL.WEO_PG_CDC COMMIT;
-SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_CONNECTORS(600, 'OPENFLOW_GEN2.CONTROL.WEO_PG_CDC');
-ALTER OPENFLOW CONNECTOR OPENFLOW_GEN2.CONTROL.WEO_PG_CDC START;
-SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_CONNECTORS(600, 'OPENFLOW_GEN2.CONTROL.WEO_PG_CDC');
-SHOW OPENFLOW CONNECTORS IN ACCOUNT;
+-- The connector owns what it creates. These let you query your own demo data.
+GRANT SELECT ON FUTURE TABLES IN DATABASE <DEMO_DB> TO ROLE <ADMIN_ROLE>;
+GRANT USAGE ON FUTURE SCHEMAS IN DATABASE <DEMO_DB> TO ROLE <ADMIN_ROLE>;
+
+-- Secret access needs BOTH: READ on the secret and USAGE on its schema.
+GRANT USAGE ON SCHEMA <DEMO_DB>.PUBLIC TO ROLE <RUNTIME_ROLE>;
+GRANT READ ON SECRET <DEMO_DB>.PUBLIC.<PG_INSTANCE>_PASSWORD TO ROLE <RUNTIME_ROLE>;
+
+-- Lets cdc.sql read the connector's config.json with SELECT.
+CREATE FILE FORMAT IF NOT EXISTS <DEMO_DB>.PUBLIC.RAW_JSON TYPE = JSON;
+
+-- CREATE NETWORK RULE checks the host resolves, which is why Postgres came first.
+CREATE OR REPLACE NETWORK RULE <DEMO_DB>.PUBLIC.<PG_INSTANCE>_EGRESS
+  MODE = EGRESS TYPE = HOST_PORT VALUE_LIST = ('<pg_host>:5432');
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION <PG_INSTANCE>_EAI
+  ALLOWED_NETWORK_RULES = (<DEMO_DB>.PUBLIC.<PG_INSTANCE>_EGRESS) ENABLED = TRUE
+  COMMENT = 'Lets the gen 2 CDC runtime reach the demo Postgres instance.';
+GRANT USAGE ON INTEGRATION <PG_INSTANCE>_EAI TO ROLE <RUNTIME_ROLE>;
 ```
 
-`COMMIT` puts the connector into `UPDATING` and `START` is rejected while it sits there, which
-is what the first wait is for.
+## Step 8: Runtime
 
-**If this lands in `START_FAILED`, read the gotchas entry on several Source properties being
-reported as required before changing anything.** The likely cause is a config section that
-failed to apply rather than a value that is missing, and recovery needs a new live version, not
-a retried `START`.
-
-## 8. Wait for the snapshot, then capture the demo values
-
-Poll until the destination count matches the source. Around 35 to 90 seconds for 360,000
-rows, so quick, but not instant.
+**Creating.** Three to five minutes, dominated by the wait:
 
 ```sql
-SELECT COUNT(*) AS ROW_COUNT,
-       COUNT(DISTINCT COUNTRY_CODE) AS COUNTRIES,
-       COUNT(DISTINCT INDICATOR_CODE) AS INDICATORS,
-       MIN(YEAR) AS MIN_YEAR,
-       MAX(YEAR) AS MAX_YEAR
-FROM WEO_CDC_DEMO.WEO.OBSERVATIONS;
+USE ROLE <OPENFLOW_ROLE>;
+CREATE OPENFLOW RUNTIME IF NOT EXISTS <CONTROL_SCHEMA>.<RUNTIME>
+  IN DEPLOYMENT <DEPLOYMENT>
+  NODE_TYPE = MEDIUM NODE_TYPE_TIER = 'M4' MIN_NODES = 1 MAX_NODES = 1
+  EXECUTE_AS_ROLE = <RUNTIME_ROLE>
+  EXTERNAL_ACCESS_INTEGRATIONS = (<PG_INSTANCE>_EAI)
+  COMMENT = 'Runs the WEO Postgres CDC connector. Demo-scoped, safe to drop.';
 ```
 
-Then capture the value Part 2 will change, and derive the revised figure from it:
+**Reusing:**
 
 ```sql
-SELECT VALUE FROM WEO_CDC_DEMO.WEO.OBSERVATIONS
-WHERE COUNTRY_CODE = 'GBR' AND INDICATOR_CODE = 'NGDPD' AND YEAR = 2026;
+USE ROLE <OPENFLOW_ROLE>;
+ALTER OPENFLOW RUNTIME <CONTROL_SCHEMA>.<RUNTIME> ADD EXTERNAL_ACCESS_INTEGRATIONS = (<PG_INSTANCE>_EAI);
 ```
 
-Hold both. **Nothing in Part 2 carries a hardcoded number**, so the demo survives a WEO
-restatement.
+Then poll every 30 s until `ACTIVE`:
+
+```sql
+SHOW OPENFLOW RUNTIMES LIKE '<RUNTIME>' IN SCHEMA <CONTROL_SCHEMA>;
+```
+
+Poll with `SHOW`, not `SYSTEM$WAIT_FOR_STABLE_OPENFLOW_RUNTIMES`: the wait function has been
+seen erroring while the runtime is still `CREATING`, moments before it went `ACTIVE`.
+
+## Step 9: Connector, from a configuration bundle
+
+The connector is created **from a complete configuration bundle** on a stage, so it starts with
+a committed `VERSION$1` and needs no edit, commit or second upload. This is the same mechanism
+used to promote a connector from Git or clone one between runtimes.
+
+Build the bundle locally. Fill the five placeholders in the template with `sed`:
+
+```bash
+B=~/.cache/openflow-weo-demo/bundle && mkdir -p "$B"
+curl -sS --fail -o "$B/postgresql-42.7.8.jar" https://jdbc.postgresql.org/download/postgresql-42.7.8.jar
+sed -e 's/__PG_HOST__/<pg_host>/' \
+    -e 's/__PG_SECRET__/<DEMO_DB>.PUBLIC.<PG_INSTANCE>_PASSWORD/' \
+    -e 's/__RUNTIME_ROLE__/<RUNTIME_ROLE>/' \
+    -e 's/__DEST_DB__/<DEMO_DB>/' \
+    -e 's/__WAREHOUSE__/<WAREHOUSE>/' \
+    <SKILL_DIR>/assets/connector-config.template.json > "$B/config.json"
+grep -c '__' "$B/config.json"   # must print 0
+```
+
+Create a stage for it, readable by the role that creates the connector:
+
+```sql
+USE ROLE <ADMIN_ROLE>;
+CREATE STAGE IF NOT EXISTS <DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE
+  COMMENT = 'Configuration bundle for the WEO CDC connector';
+GRANT USAGE ON DATABASE <DEMO_DB> TO ROLE <OPENFLOW_ROLE>;
+GRANT USAGE ON SCHEMA <DEMO_DB>.PUBLIC TO ROLE <OPENFLOW_ROLE>;
+GRANT READ ON STAGE <DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE TO ROLE <OPENFLOW_ROLE>;
+```
+
+Upload both files. Snowsight cannot PUT local files, so this is the CLI:
+
+```bash
+snow stage copy -c <CONNECTION> "$B/config.json" @<DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE/pg_cdc/ --overwrite
+snow stage copy -c <CONNECTION> "$B/postgresql-42.7.8.jar" @<DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE/pg_cdc/ --overwrite
+```
+
+```sql
+LS @<DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE/pg_cdc/;
+```
+
+**Both files must be listed.** A missing JAR gives no useful error later.
+
+Create the connector, wait for it to settle, then start it:
+
+```sql
+USE ROLE <OPENFLOW_ROLE>;
+CREATE OPENFLOW CONNECTOR IF NOT EXISTS <CONTROL_SCHEMA>.<CONNECTOR>
+  IN RUNTIME <CONTROL_SCHEMA>.<RUNTIME>
+  FROM '@<DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE/pg_cdc/'
+  COMMENT = 'WEO Postgres CDC demo connector';
+```
+
+Poll `SHOW OPENFLOW CONNECTORS LIKE '<CONNECTOR>' IN SCHEMA <CONTROL_SCHEMA>` until it leaves
+`CREATING` (about a minute), then:
+
+```sql
+USE ROLE <OPENFLOW_ROLE>;
+ALTER OPENFLOW CONNECTOR <CONTROL_SCHEMA>.<CONNECTOR> START;
+SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_CONNECTORS(600, '<CONTROL_SCHEMA>.<CONNECTOR>');
+```
+
+Expect `RUNNING`. On `START_FAILED`, read the gotchas entry on Source properties reported as
+required before changing anything.
+
+The template's settings worth knowing: password is a `SECRET_REFERENCE` (the file holds the
+secret's name, never the password), driver is an `ASSET_REFERENCE` to the JAR's bare filename,
+and the merge schedule is every second (`* * * * * ?`) rather than the once-a-minute default,
+so a change lands fast enough to narrate.
+
+## Step 10: Verify the snapshot
+
+Poll every 20 s until the count matches step 6's row count, usually inside 90 s:
+
+```sql
+SELECT COUNT(*) AS rows_loaded,
+       COUNT(DISTINCT COUNTRY_CODE) AS countries,
+       COUNT(DISTINCT INDICATOR_CODE) AS indicators
+FROM <DEMO_DB>.WEO.OBSERVATIONS;
+```
+
+Then confirm the demo row exists:
+
+```sql
+SELECT VALUE FROM <DEMO_DB>.WEO.OBSERVATIONS
+WHERE COUNTRY_CODE = 'GBR' AND INDICATOR_CODE = 'NGDPD' AND FREQUENCY = 'Annual' AND YEAR = 2026;
+```
 
 ## Output
 
-Report green with the real figures, and remind the user to run Part 3 after the meeting.
+Report green with real figures and the list in `created`. Point the presenter at
+`<SKILL_DIR>/assets/cdc.sql`: paste it into a Snowsight worksheet, edit the `SET` block at the top
+to match `state.json`, and keep it open as a second screen during the demo.
 
-**Next:** when the customer is present, load `<SKILL_DIR>/demo/SKILL.md`.
+**Next:** with the customer present, load `<SKILL_DIR>/demo/SKILL.md`. Afterwards, Part 3.
