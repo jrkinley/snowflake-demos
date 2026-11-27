@@ -1,6 +1,5 @@
 # The demo's downloads and bundle live in ~/.cache/openflow-weo-demo/, outside this directory,
 # so they are neither committed nor published with the skill. These patterns are a guard in
-# case a data file, connector config or JDBC driver is ever written in here.
-data/
+# case a connector config or JDBC driver is ever written in here.
 config.json
 *.jar

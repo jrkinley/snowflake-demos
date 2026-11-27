@@ -1,6 +1,6 @@
 ---
 name: postgres-cdc-openflow
-description: "Demo the Openflow gen 2 PostgreSQL CDC connector end to end, built entirely from Snowflake SQL objects. Provisions a Snowflake Postgres source loaded with the full IMF World Economic Outlook dataset, reuses or creates a gen 2 deployment, runtime and connector, then walks through change data capture live with a customer watching. Includes teardown of only what it created. Triggers: run my postgres cdc demo, run my pg cdc demo, run my cdc demo, postgres cdc demo, pg cdc demo, openflow gen 2 cdc demo, gen2 postgres cdc demo, openflow cdc demo, demo postgres cdc, run the cdc demo, present the cdc demo, provision cdc demo, set up cdc demo, rebuild cdc demo, tear down cdc demo. Prefer it over any gen 1 postgres-cdc-demo skill unless the user explicitly says gen 1 or nipyapi."
+description: "Demo the Openflow gen 2 PostgreSQL CDC connector end to end, built entirely from Snowflake SQL objects. Provisions a Snowflake Postgres source loaded with the full IMF World Economic Outlook dataset, reuses or creates a gen 2 deployment, runtime and connector, then walks through change data capture live with a customer watching. Includes teardown of only what it created. Triggers: run my postgres cdc demo, run my pg cdc demo, run my cdc demo, postgres cdc demo, pg cdc demo, openflow gen 2 cdc demo, gen2 postgres cdc demo, openflow cdc demo, demo postgres cdc, run the cdc demo, present the cdc demo, provision cdc demo, set up cdc demo, rebuild cdc demo, tear down cdc demo."
 ---
 
 # Openflow gen 2 PostgreSQL CDC demo
