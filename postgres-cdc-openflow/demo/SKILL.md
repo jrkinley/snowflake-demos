@@ -1,6 +1,6 @@
 ---
 name: openflow-gen2-pg-cdc-walkthrough
-description: "Part 2 of the Openflow gen 2 PostgreSQL CDC demo: six guided steps showing change data capture live, with a customer watching the screen."
+description: "Part 2 of postgres-cdc-openflow. Load only from that skill's router, never directly."
 parent_skill: postgres-cdc-openflow
 ---
 
@@ -11,7 +11,8 @@ presenter's talk track lives in `<SKILL_DIR>/assets/cdc.sql`, open in Snowsight 
 nothing in this file is commentary to repeat.
 
 Names come from `~/.cache/openflow-weo-demo/state.json`. Below, `<TARGET>` is
-`<DEMO_DB>.WEO.OBSERVATIONS`, `<CONNECTOR_FQN>` is `<CONTROL_SCHEMA>.<CONNECTOR>`, and `<PSQL>` is:
+`<DEMO_DB>.WEO.OBSERVATIONS`, `<CONNECTOR_FQN>` is `<CONTROL_SCHEMA>.<CONNECTOR>`,
+`<JOURNAL_TABLE>` is the journal table name found in step 6, and `<PSQL>` is:
 
 ```
 psql "host=<pg_host> port=5432 user=snowflake_admin dbname=postgres sslmode=require"
@@ -22,9 +23,12 @@ the password.
 
 ## Rules
 
-1. **One step per turn.** Do the step, print its output, end with its gate, stop.
-2. Start each step with `# Step N of 6: <title>`, then this progress list, `✅` done, `▶️`
-   current, `⬜` to come. Titles only, nothing else:
+Prose is two or three short sentences of explanation. No stage directions: never "say",
+"point at", "now we", "takeaway".
+
+1. **One step per turn.** Do the step, print its output, end with its gate, stop. Start each
+   step with `# Step N of 6: <title>`, then this progress list, `✅` done, `▶️` current, `⬜` to
+   come. Titles only, nothing else:
    ```
    ⬜ Built out of SQL
    ⬜ The configuration is a file
@@ -33,23 +37,22 @@ the password.
    ⬜ And changes back
    ⬜ The change itself is a record
    ```
-3. **Show every query, then run it** with `snowflake_sql_execute` and print the result as a
-   table. Never post-process with shell pipelines; never show a figure that was not just queried.
-4. Prose is two or three short sentences of explanation. No stage directions: never "say",
-   "point at", "now we", "takeaway".
-5. **Gates.** Every step ends with `ask_user_question`, customer-readable, no object names:
+2. **Show every query, then run it** with the SQL tool and print the result as a table. Never
+   post-process with shell pipelines; never show a figure that was not just queried. Begin every
+   call with `USE ROLE <ADMIN_ROLE>;` (or `<OPENFLOW_ROLE>` for the connector queries in steps 1
+   and 2), because the demo usually runs in a fresh session whose default role cannot see the
+   demo objects. Keep the `USE ROLE` out of what you show the customer.
+3. **Gates.** Every step ends with `ask_user_question`, customer-readable, no object names:
    - Plain steps: `Continue` / `Stay on this step`.
    - Postgres steps (4 and 5): **print the psql command in chat as a fenced `bash` block first**,
      then gate with `I've run it` / `Run it for me` / `Stay on this step`. The command is in chat
-     so it can be copied; the gate only records the choice.
-6. **"Run it for me"**: run exactly the printed command with the bash tool, and show its output
-   (`UPDATE 1`). Same command, nothing added.
-7. After a Postgres change, poll the row every 10 s with the query shown, up to 120 s, printing
-   each result. Say it typically takes 30 to 60 seconds, never "instant".
-8. **Never print the Postgres password**, and never print `state.json`.
-9. **If anything fails or the change has not arrived after 120 s, say so plainly and stop.**
-   Do not debug on a shared screen; [../references/gotchas.md](../references/gotchas.md) is for
-   afterwards.
+     so it can be copied; the gate only records the choice. "Run it for me" runs exactly the
+     printed command with the bash tool and shows its output (`UPDATE 1`), nothing added.
+4. **Polling.** After a Postgres change, poll the row every 10 s with the query shown, at most
+   12 checks, printing each result. Say it usually takes under 30 seconds, never "instant".
+5. **Never print the Postgres password**, and never print `state.json`. If anything fails or the
+   change has not arrived after 12 checks, say so plainly and stop. Do not debug on a shared
+   screen; `<SKILL_DIR>/references/gotchas.md` is for afterwards.
 
 ## Pre-flight (silent unless something is wrong)
 
@@ -60,7 +63,7 @@ Before step 1, every time:
    ```bash
    <PSQL> -Atc "SELECT value FROM weo.observations WHERE country_code='GBR' AND indicator_code='NGDPD' AND frequency='Annual' AND year=2026"
    ```
-3. **If it is `0`, a previous run never reverted.** Take the original from the journal, the most
+3. **If it is `0`, a previous run never reverted.** Find the journal as in step 6, take the most
    recent non-zero `PAYLOAD__VALUE` for that key, and tell the presenter privately, in one line,
    before the customer is watching. Offer to restore it. Never guess a figure.
 4. Hold the non-zero value as `ORIGINAL`. Steps 4 and 5 use it; nothing is hard-coded.
@@ -93,14 +96,17 @@ Gate: `Continue` / `Stay on this step`.
 ## Step 2 of 6: The configuration is a file
 
 ```sql
-SHOW VERSIONS IN OPENFLOW CONNECTOR <CONNECTOR_FQN>;
-SELECT "name", "is_default", "source_location_uri" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
+LS 'snow://openflow_connector/<CONNECTOR_FQN>/versions/last/';
 ```
+
+That is the connector's own committed copy: `config.json` plus the driver. Then read the
+configuration from the bundle it was created from (the same file; a path to one file inside a
+connector version reads every file in it, JAR included, and fails):
 
 ```sql
 WITH cfg AS (
   SELECT $1 AS j
-  FROM 'snow://openflow_connector/<CONNECTOR_FQN>/versions/last/config.json'
+  FROM @<DEMO_DB>.PUBLIC.CONNECTOR_BUNDLE/pg_cdc/config.json
        (FILE_FORMAT => '<DEMO_DB>.PUBLIC.RAW_JSON')
 )
 SELECT s.value:name::STRING AS section, p.key AS property, p.value:valueType::STRING AS value_type,
@@ -153,7 +159,7 @@ Under it: "Run this in a terminal, or let me run it. Expect `UPDATE 1`."
 
 Gate: `I've run it` / `Run it for me` / `Stay on this step`.
 
-After the gate, apply rules 6 and 7 with the row query above until `VALUE` is `0`. Then explain:
+After the gate, apply rules 3 and 4 with the row query above until `VALUE` is `0`. Then explain:
 one row changed among hundreds of thousands, nothing reran; the connector read it from the
 Postgres write-ahead log and merged it. `_SNOWFLAKE_UPDATED_AT` moved.
 
@@ -178,10 +184,13 @@ Gate: `Continue` / `Stay on this step`.
 
 ## Step 6 of 6: The change itself is a record
 
+The connector creates the journal at the first change, so find it now, not earlier. The suffix
+changes on every rebuild, so take the newest and hold it as `<JOURNAL_TABLE>`:
+
 ```sql
 SELECT TABLE_NAME FROM <DEMO_DB>.INFORMATION_SCHEMA.TABLES
 WHERE TABLE_SCHEMA = 'WEO' AND TABLE_NAME ILIKE 'OBSERVATIONS_JOURNAL%'
-ORDER BY TABLE_NAME DESC LIMIT 1;
+ORDER BY CREATED DESC LIMIT 1;
 ```
 
 ```sql

@@ -1,5 +1,6 @@
 -- Postgres source schema for the Openflow CDC demo. Run as snowflake_admin with psql -f.
--- Idempotent: drops and recreates the demo table, the raw landing table and the publication.
+-- Idempotent: drops and recreates the demo table and the raw landing table. pg-load.sql
+-- recreates the publication, so always run the two together.
 
 CREATE SCHEMA IF NOT EXISTS weo;
 

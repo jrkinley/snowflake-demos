@@ -14,7 +14,7 @@ GET https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/WEO/+/*
 Accept: application/vnd.sdmx.data+csv;version=2.0.0
 ```
 
-Part 1 step 6 downloads it with `curl` to `~/.cache/openflow-weo-demo/weo.csv`, outside the skill,
+Part 1 step 5 downloads it with `curl` to `~/.cache/openflow-weo-demo/weo.csv`, outside the skill,
 so the skill stays small enough to publish.
 
 Two API traps, both silent: `startPeriod`/`endPeriod` are ignored, and

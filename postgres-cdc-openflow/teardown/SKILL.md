@@ -1,6 +1,6 @@
 ---
 name: openflow-gen2-pg-cdc-teardown
-description: "Part 3 of the Openflow gen 2 PostgreSQL CDC demo: remove only what Part 1 created, in dependency order, behind one confirmation."
+description: "Part 3 of postgres-cdc-openflow. Load only from that skill's router, never directly."
 parent_skill: postgres-cdc-openflow
 ---
 
@@ -37,7 +37,7 @@ SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_CONNECTORS(600, '<CONTROL_SCHEMA>.<CONNEC
 ALTER OPENFLOW CONNECTOR IF EXISTS <CONTROL_SCHEMA>.<CONNECTOR> TERMINATE;
 ```
 
-Poll `SHOW OPENFLOW CONNECTORS LIKE '<CONNECTOR>' IN SCHEMA <CONTROL_SCHEMA>` until `TERMINATED`, then:
+Poll `SHOW OPENFLOW CONNECTORS LIKE '<CONNECTOR>' IN SCHEMA <CONTROL_SCHEMA>` every 15 s until `TERMINATED`, at most 20 checks, then:
 
 ```sql
 USE ROLE <OPENFLOW_ROLE>;
@@ -53,12 +53,14 @@ SELECT SYSTEM$WAIT_FOR_STABLE_OPENFLOW_RUNTIMES(900, '<CONTROL_SCHEMA>.<RUNTIME>
 ALTER OPENFLOW RUNTIME IF EXISTS <CONTROL_SCHEMA>.<RUNTIME> TERMINATE;
 ```
 
-Poll `SHOW OPENFLOW RUNTIMES LIKE '<RUNTIME>' IN SCHEMA <CONTROL_SCHEMA>` until `TERMINATED`, then:
+Poll `SHOW OPENFLOW RUNTIMES LIKE '<RUNTIME>' IN SCHEMA <CONTROL_SCHEMA>` every 30 s until `TERMINATED`, at most 30 checks, then:
 
 ```sql
 USE ROLE <OPENFLOW_ROLE>;
 DROP OPENFLOW RUNTIME IF EXISTS <CONTROL_SCHEMA>.<RUNTIME>;
 ```
+
+If a poll reaches its limit, stop and report the last status.
 
 ### 2b. Runtime, if reused
 
@@ -76,8 +78,8 @@ DROP EXTERNAL ACCESS INTEGRATION IF EXISTS <PG_INSTANCE>_EAI;
 
 ### 4. Postgres, policy, database
 
-Enforced order: the instance holds the policy, and the policy references a rule inside the
-database.
+Each object only if listed in `created`. Enforced order: the instance holds the policy, and the
+policy references a rule inside the database.
 
 ```sql
 USE ROLE <ADMIN_ROLE>;
@@ -101,11 +103,18 @@ USE ROLE <OPENFLOW_ROLE>;
 DROP OPENFLOW DEPLOYMENT IF EXISTS <DEPLOYMENT>;
 ```
 
-Drop `OPENFLOW_GEN2` only if listed and now empty of runtimes and connectors.
+Drop `OPENFLOW_GEN2` only if it is listed in `created` and `SHOW OPENFLOW RUNTIMES IN SCHEMA
+OPENFLOW_GEN2.CONTROL` returns nothing:
+
+```sql
+USE ROLE <OPENFLOW_ROLE>;
+DROP DATABASE IF EXISTS OPENFLOW_GEN2;
+```
 
 ## Verify
 
-Each as its own call, each empty for created objects:
+Each as its own call, starting with `USE ROLE <ADMIN_ROLE>;` (`<OPENFLOW_ROLE>` for the Openflow
+checks). Each is empty for created objects, and still present for reused ones:
 
 ```sql
 SHOW OPENFLOW CONNECTORS LIKE '<CONNECTOR>' IN ACCOUNT;
@@ -119,20 +128,35 @@ SHOW DATABASES LIKE '<DEMO_DB>';
 ```sql
 SHOW EXTERNAL ACCESS INTEGRATIONS LIKE '<PG_INSTANCE>_EAI';
 ```
+```sql
+SHOW OPENFLOW RUNTIMES LIKE '<RUNTIME>' IN ACCOUNT;
+```
+```sql
+SHOW OPENFLOW DEPLOYMENTS LIKE '<DEPLOYMENT>';
+```
+```sql
+SHOW WAREHOUSES LIKE '<WAREHOUSE>';
+```
+```sql
+SHOW ROLES LIKE '<RUNTIME_ROLE>';
+```
 
 ## Local cleanup
 
 Remove only this demo's `~/.pgpass` line, never the file, which holds other servers' logins:
 
 ```bash
+umask 077
 HOST=<pg_host>
-grep -v "^$HOST:" ~/.pgpass > ~/.pgpass.tmp && mv ~/.pgpass.tmp ~/.pgpass && chmod 600 ~/.pgpass
-rm -rf ~/.cache/openflow-weo-demo/bundle ~/.cache/openflow-weo-demo/state.json
+grep -v "^$HOST:" ~/.pgpass > ~/.pgpass.tmp; mv ~/.pgpass.tmp ~/.pgpass; chmod 600 ~/.pgpass
+rm -rf ~/.cache/openflow-weo-demo/bundle ~/.cache/openflow-weo-demo/state.json ~/.cache/openflow-weo-demo/cdc.sql \
+  ~/.cache/openflow-weo-demo/reset-access.sql ~/.cache/openflow-weo-demo/credential.sh
 ```
 
 Keep `weo.csv`; it saves a download next time.
 
 ## Output
 
-Report what was dropped and what was kept. If a reused or kept deployment remains, say so with its
-idle cost of around 2.64 credits a day, so keeping it is a conscious choice.
+Report what was dropped and what was kept. If a reused or kept deployment remains, say that a
+deployment bills while idle and nothing caps it, so keeping it is a conscious choice. Rates are
+in the [Snowflake Credit Consumption Table](https://www.snowflake.com/legal-files/CreditConsumptionTable.pdf).

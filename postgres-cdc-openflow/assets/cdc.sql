@@ -7,11 +7,12 @@
 -- Comments are the talk track: what the query shows and what to say over it.
 -- The customer sees the worksheet, so keep the comments short if you share it.
 --
--- Edit the SET block to match ~/.cache/openflow-weo-demo/state.json. Two
--- statements take literal names because SQL does not allow variables there;
--- they are marked EDIT.
+-- Provision writes a filled-in copy to ~/.cache/openflow-weo-demo/cdc.sql with
+-- the SET block and the two literal names marked EDIT taken from state.json.
+-- SQL does not allow variables in those two places.
 -- =============================================================================
 
+SET admin_role     = 'ACCOUNTADMIN';
 SET demo_db        = 'WEO_CDC_DEMO';
 SET connector_fqn  = 'OPENFLOW_GEN2.CONTROL.WEO_PG_CDC';
 SET target_table   = $demo_db || '.WEO.OBSERVATIONS';
@@ -21,12 +22,12 @@ SET country   = 'GBR';
 SET indicator = 'NGDPD';
 SET yr        = 2026;
 
-USE ROLE ACCOUNTADMIN;
+USE ROLE IDENTIFIER($admin_role);
 USE DATABASE IDENTIFIER($demo_db);
 
 
 -- =============================================================================
--- 0. Setup, for reference. ALREADY RUN; do not run again.
+-- 1. Built out of SQL: the setup, for reference. ALREADY RUN; do not run again.
 -- =============================================================================
 -- "This is the whole setup. Three SQL objects: a deployment, a runtime and a
 -- connector. Each is a Snowflake object, owned by a role and governed like a
@@ -54,7 +55,7 @@ USE DATABASE IDENTIFIER($demo_db);
 
 
 -- =============================================================================
--- 1. What exists: the objects and their state
+-- 1, continued. What exists: the objects and their state
 -- =============================================================================
 -- "Same SHOW and DESCRIBE you'd use on any Snowflake object."
 -- SHOW ... IN ACCOUNT lists everything, so other runtimes may appear. That is a
@@ -85,10 +86,13 @@ LS 'snow://openflow_connector/OPENFLOW_GEN2.CONTROL.WEO_PG_CDC/versions/last/';
 -- A version holds the config AND the JDBC driver, so it is a self-contained
 -- bundle, not a pointer to whatever is installed on a server.
 
--- EDIT: same literal path as above.
+-- Read the config from the bundle the connector was created from (the same file).
+-- A path to one file inside a connector version reads every file in it, JAR
+-- included, and fails to parse.
+-- EDIT: replace WEO_CDC_DEMO if your demo database differs.
 WITH cfg AS (
   SELECT $1 AS j
-  FROM 'snow://openflow_connector/OPENFLOW_GEN2.CONTROL.WEO_PG_CDC/versions/last/config.json'
+  FROM @WEO_CDC_DEMO.PUBLIC.CONNECTOR_BUNDLE/pg_cdc/config.json
        (FILE_FORMAT => 'WEO_CDC_DEMO.PUBLIC.RAW_JSON')
 )
 SELECT s.value:name::STRING        AS section,
@@ -131,7 +135,7 @@ FROM IDENTIFIER($target_table);
 
 SHOW TABLES IN SCHEMA WEO;   -- the worksheet's database is $demo_db
 -- OBSERVATIONS is current state. OBSERVATIONS_JOURNAL_<n> is the change log,
--- section 5. The NESTED_ERROR_TABLE_* tables catch rows that fail to load.
+-- section 6. The NESTED_ERROR_TABLE_* tables catch rows that fail to load.
 
 
 -- =============================================================================
@@ -149,15 +153,20 @@ WHERE COUNTRY_CODE = $country AND INDICATOR_CODE = $indicator
 -- nothing is rescheduled. The connector reads the change from the Postgres
 -- write-ahead log and merges it."
 --
--- Re-run the SELECT above every 15 seconds or so. Expect 30 to 60 seconds:
+-- Re-run the SELECT above every 15 seconds or so. Expect 15 to 30 seconds:
 -- the merge runs every second, the rest is commit and batching.
 -- VALUE becomes 0 and _SNOWFLAKE_UPDATED_AT moves.
---
--- Then revert it in Postgres, and re-run again to watch the original return.
 
 
 -- =============================================================================
--- 5. The change itself is a record
+-- 5. And changes back
+-- =============================================================================
+-- Revert it in Postgres, and re-run the section 4 SELECT to watch the original
+-- return.
+
+
+-- =============================================================================
+-- 6. The change itself is a record
 -- =============================================================================
 -- "Alongside current state, every change lands as a row in a journal table,
 -- so you have the history of the change, not only its outcome."
@@ -168,7 +177,7 @@ SET journal_table = (
   SELECT TABLE_CATALOG || '.' || TABLE_SCHEMA || '."' || TABLE_NAME || '"'
   FROM INFORMATION_SCHEMA.TABLES
   WHERE TABLE_SCHEMA = 'WEO' AND TABLE_NAME ILIKE 'OBSERVATIONS_JOURNAL%'
-  ORDER BY TABLE_NAME DESC
+  ORDER BY CREATED DESC
   LIMIT 1
 );
 
