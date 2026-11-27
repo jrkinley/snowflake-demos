@@ -1,143 +1,192 @@
 ---
 name: postgres-cdc-openflow
-version: 1.0.0
-description: "Demo the Openflow gen 2 PostgreSQL CDC connector end to end, built entirely from Snowflake SQL objects. Provisions a Snowflake Postgres source loaded with the full IMF World Economic Outlook dataset, a gen 2 deployment, runtime and connector, then walks through change data capture live with a customer watching. Includes teardown. Triggers: run my postgres cdc demo, run my pg cdc demo, run my cdc demo, my postgres cdc demo, postgres cdc demo, pg cdc demo, openflow gen 2 cdc demo, gen2 postgres cdc demo, openflow cdc demo, demo postgres cdc, run the cdc demo, present the cdc demo, provision cdc demo, rebuild cdc demo, tear down cdc demo. This is the gen 2 SQL-object demo and is the one to use; prefer it over any gen 1 postgres-cdc-demo skill unless the user explicitly says gen 1 or nipyapi."
+description: "Demo the Openflow gen 2 PostgreSQL CDC connector end to end, built entirely from Snowflake SQL objects. Provisions a Snowflake Postgres source loaded with the full IMF World Economic Outlook dataset, reuses or creates a gen 2 deployment, runtime and connector, then walks through change data capture live with a customer watching. Includes teardown of only what it created. Triggers: run my postgres cdc demo, run my pg cdc demo, run my cdc demo, postgres cdc demo, pg cdc demo, openflow gen 2 cdc demo, gen2 postgres cdc demo, openflow cdc demo, demo postgres cdc, run the cdc demo, present the cdc demo, provision cdc demo, set up cdc demo, rebuild cdc demo, tear down cdc demo."
 ---
 
 # Openflow gen 2 PostgreSQL CDC demo
 
 ## Summary
 
-Change a row in a Snowflake Postgres database and watch it land in a Snowflake table about half a minute later. The Openflow gen 2 PostgreSQL CDC connector replicates a source loaded with the full IMF World Economic Outlook dataset, and every object, connector included, is created from Snowflake SQL. The story: real-time replication from an operational Postgres into Snowflake with no pipeline code to maintain.
-
-Three parts. **Discover what exists first, then ask which part to run.** Never assume.
+Change a row in a Snowflake Postgres database and watch it land in a Snowflake table under a
+minute later. The Openflow gen 2 PostgreSQL CDC connector replicates the full IMF World Economic
+Outlook dataset, and every object, connector included, is created with Snowflake SQL.
 
 | Part | What it does | Customer present? |
 |---|---|---|
-| 1. Provision | Builds everything. 25 to 35 minutes. | No |
-| 2. Demo CDC | Five guided steps, about fifteen minutes. | **Yes** |
-| 3. Teardown | Removes everything this skill created. | No |
+| 1. Provision | Reuses what the account has, creates the rest. 20 to 30 minutes. | No |
+| 2. Demo CDC | Six guided steps, about fifteen minutes. | **Yes** |
+| 3. Teardown | Removes only what Part 1 created. | No |
 
-Run Part 1 the day before. Provisioning involves a two-minute Postgres create, a snapshot
-of roughly 360,000 rows and a known transient failure. None of that is watchable.
+Run Part 1 the day before. None of it is watchable.
 
-## Setup
-
-**Resolve `<SKILL_DIR>` once**, to the absolute path of the directory holding this file. The
-skill is usually installed as a symlink outside the working directory, so relative paths like
-`scripts/load-weo-data.py` resolve against the wrong place:
-
-```bash
-# Resolve from the directory holding this SKILL.md, for example:
-SKILL_DIR=$(cd "$(dirname "<path to this SKILL.md>")" && pwd -P)
-# When installed as a Cortex Code skill this is typically
-# ~/.snowflake/cortex/skills/postgres-cdc-openflow
-```
-
-**Establish the `snow` connection before anything else.** Most work runs through the
-`snowflake_sql_execute` tool, which uses the session's existing connection and needs no token of
-its own. The CLI is still needed for `snow stage copy` and the two scripts in `scripts/`, and
-those take `-c <name>`.
-
-```bash
-snow connection list
-```
-
-**If more than one connection is listed and none is marked default, stop and ask which to
-use.** Do not infer it from the account name or pick the first. Provisioning a Postgres
-instance into the wrong account is slow to notice and annoying to unpick.
-
-Note that `default_connection_name` in `~/.snowflake/config.toml` can name a connection that
-does not exist, in which case there is no usable default however it looks.
-
-**Prefer `snowflake_sql_execute` over `snow sql` throughout.** Each `snow sql` call is a
-separate process that authenticates on its own, so on an OAuth connection it triggers a browser
-prompt. Across a full provision that is dozens of interruptions for no benefit.
-
-Detail lives in `references/`, loaded on demand rather than up front:
-
-| File | Read it when |
-|---|---|
-| [provision.md](references/provision.md) | Before running Part 1 |
-| [teardown.md](references/teardown.md) | Before running Part 3 |
-| [weo-data.md](references/weo-data.md) | The dataset is missing or a new vintage lands |
-| [gotchas.md](references/gotchas.md) | **Before debugging anything** |
-
-## Step 0: discover, then route
-
-Run these before asking the user anything:
-
-```sql
-SHOW OPENFLOW DEPLOYMENTS;
-SHOW OPENFLOW RUNTIMES IN ACCOUNT;
-SHOW OPENFLOW CONNECTORS IN ACCOUNT;
-SHOW POSTGRES INSTANCES;
-```
-
-Each returns a dozen or more columns. **Report only these**, so every run reports the same
-shape:
-
-| Object | Columns | Also worth saying |
-|---|---|---|
-| Deployment | `name`, `status`, `comment` | The comment often records whether it is permanent. Carry that into teardown. |
-| Runtime | `name`, `status`, `deployment` | |
-| Connector | `name`, `status` | |
-| Postgres instance | `name`, `state` | |
-
-Then, if `WEO_CDC_DEMO.WEO.OBSERVATIONS` exists:
-
-```sql
-SELECT COUNT(*) FROM WEO_CDC_DEMO.WEO.OBSERVATIONS;
-```
-
-**If a connector exists, is `RUNNING`, and that count is above zero**, the demo is already
-built. Do not reprovision without being asked.
-
-## Routing
-
-**Read the user's wording before asking anything.** They may be about to share their screen.
-
-| They said | Do this |
-|---|---|
-| "run my postgres cdc demo", "run the demo", "present the demo", "start the demo", or anything else demo-only | **Go straight to Part 2. Do not ask.** Report nothing but a one-line confirmation that the connector is running and the row count is good. |
-| "provision", "build", "rebuild", "set up" | Part 1 |
-| "tear down", "clean up", "remove" | Part 3 |
-| Anything ambiguous | Say what discovery found, then ask which part |
-
-If the wording is demo-only but discovery shows the demo is **not** built, say so plainly and
-stop. Do not start a 25-minute provision for someone who is about to present.
-
-| Part | Load |
-|---|---|
-| 1. Provision | `<SKILL_DIR>/provision/SKILL.md` |
-| 2. Demo CDC | `<SKILL_DIR>/demo/SKILL.md` |
-| 3. Teardown | `<SKILL_DIR>/teardown/SKILL.md` |
-
-Load one at a time: Part 2 is screen-shared, and provisioning detail on a customer's screen is
-noise.
+**No bundled scripts.** Everything is Snowflake SQL, Postgres SQL in `assets/`, and a handful of
+standard CLI commands (`snow`, `psql`, `curl`, `jq`). The agent writes the one multi-line shell
+step to a file at run time. That keeps the skill publishable to the
+catalog and readable by anyone who opens it.
 
 ## Prerequisites
 
-Three objects are **reused rather than created**, so they must already exist:
-`OPENFLOW_GEN2.CONTROL` (the gen 2 control schema, owned by `OPENFLOWADMIN`), role
-`OPENFLOW_CDC_ROLE`, and warehouse `OPENFLOW_WH`. Part 1 fails at the grants step without
-them. Names are overridable, but the skill does not create them.
+- **A role that can administer Openflow**, `OPENFLOWADMIN` by default, set up as the Openflow
+  documentation describes. It owns the deployment, runtime and connector.
+- **Snowflake Postgres and Openflow gen 2 (Snowflake deployment)** available in the account's
+  region. Neither can be enabled from this skill.
+- **`ACCOUNTADMIN`, or a role with CREATE POSTGRES INSTANCE** (the source), **CREATE INTEGRATION**
+  (the external access integration the runtime uses to reach Postgres) and **CREATE DATABASE**
+  (the demo database holding the rules, secret and destination tables).
+- **Local `psql`, `curl`, `snow` and `jq`.** `psql` loads and changes the source, `curl` fetches
+  the dataset and JDBC driver, and `snow` and `jq` make the one credential call.
+- **Outbound HTTPS** to `api.imf.org` and `jdbc.postgresql.org`.
+- **A macOS or Linux shell.**
 
-Locally: `snow`, `psql` and `uv`, and a role that reaches `ACCOUNTADMIN`.
+## Parameters
 
-## Run the demo
+Part 1 step 1 resolves these and records the result. **Every later step reads names from the
+state file, never from this table.**
 
-Load `<SKILL_DIR>/demo/SKILL.md` (Part 2). Five guided steps on a shared screen; the moment that lands is an `UPDATE` in Postgres appearing in the Snowflake table about half a minute later.
+| Parameter | Default | Reuse offered |
+|---|---|---|
+| `ADMIN_ROLE` | `ACCOUNTADMIN` | No |
+| `OPENFLOW_ROLE` | owner of the chosen deployment, else `OPENFLOWADMIN` | Derived |
+| `DEPLOYMENT` | `WEO_CDC_DEPLOYMENT` | Yes, `ACTIVE` gen 2 deployments |
+| `RUNTIME_ROLE` | `OPENFLOW_CDC_ROLE` | Yes, an existing runtime's `execute_as_role` |
+| `WAREHOUSE` | `OPENFLOW_WH` | Yes |
+| `CONTROL_SCHEMA` | the schema holding the chosen deployment's runtimes, else `OPENFLOW_GEN2.CONTROL` | Derived |
+| `RUNTIME` | `WEO_CDC_RT` | Yes, `ACTIVE` runtimes on the deployment |
+| `PG_INSTANCE` | `WEO_CDC_PG` | No. If it exists: drop and recreate, or stop |
+| `DEMO_DB` | `WEO_CDC_DEMO` | No. If it exists, pick another name |
+| `CONNECTOR` | `WEO_PG_CDC` | No |
+| `CONNECTION` | the `snow` default connection | Asked if ambiguous |
 
-## Teardown
+Derived, never asked: network policy `<PG_INSTANCE>_POLICY`, rules `<PG_INSTANCE>_INGRESS` and
+`_EGRESS`, integration `<PG_INSTANCE>_EAI` and secret `<PG_INSTANCE>_PASSWORD`, the last three
+in `<DEMO_DB>.PUBLIC`. So two builds with different instance names never collide.
 
-Load `<SKILL_DIR>/teardown/SKILL.md` (Part 3). It removes every object Part 1 created, including the Postgres instance.
+## State file
+
+`~/.cache/openflow-weo-demo/state.json`. Written by you, CoCo, with your own file tools; never by
+a script. It holds the resolved parameters, the Postgres host, `created` (objects this run
+created) and `done` (completed provision step numbers). Teardown drops only what `created` lists.
+
+```json
+{
+  "connection": "MY_CONN",
+  "params": { "DEPLOYMENT": "SPCS_GEN2", "RUNTIME_ROLE": "OPENFLOW_CDC_ROLE", "...": "..." },
+  "pg_host": "abc.acct.region.aws.postgres.snowflake.app",
+  "created": ["DATABASE WEO_CDC_DEMO", "POSTGRES INSTANCE WEO_CDC_PG", "..."],
+  "done": [1, 2]
+}
+```
+
+Update it after each step, not at the end, so an interrupted build can resume. Part 1 merges into
+an existing `state.json`; it never overwrites it.
+
+## Preflight
+
+Run before routing. Report failures plainly and stop.
+
+```bash
+snow connection list
+command -v psql curl snow jq
+```
+
+```sql
+USE ROLE <OPENFLOW_ROLE>;
+SHOW ROLES LIKE '<OPENFLOW_ROLE>';
+```
+
+Before Part 1 has run, `<OPENFLOW_ROLE>` is `OPENFLOWADMIN`.
+
+- **More than one connection and none marked default: ask which to use.** Never infer it.
+- `psql` missing: `brew install libpq` (macOS) and add `$(brew --prefix libpq)/bin` to `PATH`,
+  or install your distribution's PostgreSQL client package (Linux).
+- No `OPENFLOWADMIN`: ask which role administers Openflow in this account and use it as
+  `<OPENFLOW_ROLE>`. Stop only if there is none.
+
+**Use the Snowflake SQL tool (`sql_execute` in Cortex Code Desktop) for all Snowflake SQL**, not
+`snow sql`. It reuses the session's connection, so there is no repeated OAuth prompt. `snow` is
+used once, for the credential call in Part 1.
+
+The SQL tool returns only the last statement's result, and a `USE ROLE` stays in force for later
+calls in the session. Start every batch with the `USE ROLE` it needs, so no call inherits the role
+from the previous one. Run dependent calls one after another, never in the same parallel batch.
+
+**Write multi-line shell and SQL to a file, then run it** (`bash <file>`, `snow sql -f <file>`).
+Heredocs hang the Cortex Code Desktop terminal.
+
+## Step 0: discover, then route
+
+Run these four as parallel calls, each starting `USE ROLE <OPENFLOW_ROLE>;`, because a role
+needs a privilege on a deployment even to see it listed:
+
+```sql
+SHOW OPENFLOW DEPLOYMENTS;
+```
+```sql
+SHOW OPENFLOW RUNTIMES IN ACCOUNT;
+```
+```sql
+SHOW OPENFLOW CONNECTORS IN ACCOUNT;
+```
+```sql
+SHOW POSTGRES INSTANCES;
+```
+
+Report only: deployment `name, status, comment`; runtime `name, status, deployment`; connector
+`name, status`; instance `name, state`. Then read `state.json` if it exists. Pass these results
+to Part 1 so it does not run them again.
+
+| They said | State | Do this |
+|---|---|---|
+| "run / present / start the demo" | **Built**: state file present, its connector `RUNNING`, its destination table holds rows | Part 2, with a one-line confirmation |
+| "run / present / start the demo" | Not built | Say so and stop. Never start a provision for someone about to present |
+| "provision", "build", "set up", "rebuild" | Any | Part 1 |
+| "tear down", "clean up", "remove" | Any | Part 3 |
+| Anything else | Any | Say what discovery found, then ask which part |
+
+| Part | Load |
+|---|---|
+| 1 | `<SKILL_DIR>/provision/SKILL.md` |
+| 2 | `<SKILL_DIR>/demo/SKILL.md` |
+| 3 | `<SKILL_DIR>/teardown/SKILL.md` |
+
+Load one at a time. `<SKILL_DIR>` is the path the loader printed as "Base directory for this
+skill" when it loaded this router file.
+
+## Workflow
+
+1. **Part 1, provision**: reuse or create every object, load the data, start the connector.
+2. **Part 2, demo**: six steps with the customer watching.
+3. **Part 3, teardown**: drop only what Part 1 created.
+
+## Stopping Points
+
+- ⚠️ Part 1, every step that creates, alters or costs money: `Run it` / `Skip, already done` / `Stop here`.
+- ⚠️ Part 1 step 1: the reuse questions, and the existing instance or database question.
+- ⚠️ Part 2, the end of every step, including the psql gates in steps 4 and 5.
+- ⚠️ Part 3: one teardown confirmation, plus an extra gate before dropping a created deployment.
+
+## Output
+
+Part 1 ends with real row counts, the `created` list and a filled-in presenter worksheet. Part 2
+ends with the customer having seen a change arrive and revert. Part 3 ends with what was dropped
+and what was kept.
+
+## Files
+
+| File | Use |
+|---|---|
+| `assets/pg-schema.sql` | Postgres tables, run by psql |
+| `assets/pg-load.sql` | Postgres transform and publication, run by psql |
+| `assets/connector-config.template.json` | Connector configuration with five placeholders |
+| `assets/cdc.sql` | Snowsight worksheet for the presenter, with the talk track in comments |
+| `references/gotchas.md` | **Read before debugging anything** |
+| `references/customer-qa.md` | Background for customer questions about gen 2 |
+| `references/weo-data.md` | The dataset, the API and vintage changes |
+| `evals/evals.md` | Routing, static and collision checks to run after any change |
 
 ## Status
 
-Last verified: 2026-09-28
-
-Known issues and their fixes are in `references/gotchas.md`. Two gaps against this repository's rules are still open:
-
-- **Least privilege.** Part 1 reuses an existing role (`OPENFLOW_CDC_ROLE`) and warehouse (`OPENFLOW_WH`) rather than creating its own, and runs the database, secret and grant steps as `ACCOUNTADMIN`.
-- **Fixed names.** The role, warehouse and `OPENFLOW_GEN2.CONTROL` names are written into the SQL, so overriding them means editing the steps.
+Last verified: 2026-11-27, end to end on Openflow gen 2 (Snowflake deployment), Snowflake
+Postgres 17, BURST_S: provision with existing role, warehouse and deployment reused; snapshot of
+361,508 rows; change and revert each under 15 seconds; teardown dropped only what it created.
+Resume after an interrupted build has not been exercised.
